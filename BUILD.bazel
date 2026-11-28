@@ -3,6 +3,7 @@ exports_files(
         ".claude-plugin/marketplace.json",
         "Cargo.toml",
         "clippy.toml",
+        "flake.nix",
         "docs/reference/commands.md",
         "docs/reference/configuration.md",
         "docs/reference/timer/bilbo-derive.service",

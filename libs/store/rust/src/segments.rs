@@ -472,7 +472,6 @@ fn binding(layout: &Layout) -> Result<catalog::Binding, StoreError> {
     })
 }
 
-/// A bilbo 0.20 data folder must not be used as the store root.
 fn refuse_older(root: &Path, shown: &Path) -> Result<(), StoreError> {
     for name in ["notes", "library"] {
         let folder = root.join(name);

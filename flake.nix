@@ -3,7 +3,7 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/619c39f6eac5d1ed6b8f073a9414baf7034b2356";
-    # Only the flake check that evaluates homeManagerModules.default reads it.
+    # Only the check may read it: the module uses the home-manager that imports it.
     home-manager = {
       url = "github:nix-community/home-manager";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -32,6 +32,7 @@
         fileset = lib.fileset.unions [
           ./Cargo.toml
           ./Cargo.lock
+          ./flake.nix
           ./apps/cli
           ./libs
           ./tools/rust
@@ -43,7 +44,7 @@
         ];
       };
 
-      # The sandbox has no /usr/bin/plutil, which these two tests run on the units they render.
+      # The sandbox has no /usr/bin/plutil.
       skippedInTheSandbox = [
         "the_launchd_job_is_a_property_list_plutil_accepts"
         "the_derive_launchd_job_is_a_property_list_plutil_accepts"
@@ -60,13 +61,12 @@
             "-p"
             "bilbo-cli"
           ];
-          # nixpkgs' cargo hook points zstd and SQLite at system libraries found with pkg-config; unset, the
-          # binary builds from the bundled sources Cargo and Bazel build and the tests run on.
+          # nixpkgs' cargo setup hook sets both to 1; unset, zstd and SQLite build from the bundled sources, as in Cargo and Bazel.
           preBuild = ''
             unset ZSTD_SYS_USE_PKG_CONFIG LIBSQLITE3_SYS_USE_PKG_CONFIG
           '';
           doCheck = withTests;
-          # The repo's gates run the tests in the debug profile; nixpkgs' hook would run them in release.
+          # Debug, as the repo's gates run them: a release build fails one of the tests.
           checkType = "debug";
           cargoTestFlags = [
             "--locked"
@@ -88,8 +88,7 @@
           };
         };
 
-      # The fourteen keys of bilbo setup, from apps/cli/src/console/settings.rs and libs/setup/rust/src/keys.rs.
-      # A new key joins this list: the activation unsets each one before it sets its own.
+      # Must name every setup key of apps/cli/src/console/settings.rs and libs/setup/rust/src/keys.rs.
       setupVariables = [
         "BILBO_SETUP_AGY_ENABLED"
         "BILBO_SETUP_AGY_PROGRAM"
@@ -107,7 +106,6 @@
         "BILBO_SETUP_WAIT"
       ];
 
-      # The words are joined by this, so the check can read the command as one line.
       joint = " \\\n  ";
 
       module =
@@ -132,7 +130,7 @@
           tool = name: {
             type = lib.types.bool;
             default = true;
-            description = "Whether bilbo setup installs the plugin in ${name}.";
+            description = "false keeps bilbo setup off ${name}; true leaves it to setup.${name}.enabled in the config file, which is true unless set.";
           };
           kept = [
             "claude"
@@ -144,8 +142,7 @@
             name:
             lib.optional (!cfg.tools.${name}) "BILBO_SETUP_${lib.toUpper name}_ENABLED=false"
           ) kept;
-          # The tool homes are what the person's shells get from home.sessionVariables, set or unset: the
-          # value goes in double quotes as home-manager's own export writes it, so the shell expands it.
+          # In double quotes, as home-manager's own export writes it, so the shell expands the value.
           homeValue = name: config.home.sessionVariables.${name} or null;
           home =
             name:
@@ -216,6 +213,7 @@
               "writeBoundary"
               "setupLaunchAgents"
               "installPackages"
+              "linkGeneration"
             ] (lib.concatStringsSep joint words);
           };
         };
@@ -267,7 +265,6 @@
           disabled = plain { enable = false; };
           text = line sample;
           profile = sample.config.home.profileDirectory;
-          # Every -u comes before the first word that assigns anything: a word with an = that does not begin with -.
           unsetsFirst =
             c:
             let
@@ -363,6 +360,20 @@
             {
               name = "the activation runs after the packages are installed";
               ok = lib.elem "installPackages" sample.config.home.activation.bilboSetup.after;
+            }
+            {
+              name = "the activation runs after the generation's files are linked";
+              ok =
+                lib.elem "linkGeneration" sample.config.home.activation.bilboSetup.after
+                && (
+                  let
+                    sorted = map (entry: entry.name) (
+                      (home-manager.lib.hm.dag.topoSort sample.config.home.activation).result or [ ]
+                    );
+                    at = name: lib.lists.findFirstIndex (entry: entry == name) (-1) sorted;
+                  in
+                  at "linkGeneration" >= 0 && at "linkGeneration" < at "bilboSetup"
+                );
             }
             {
               name = "a failed setup is a warning";

@@ -160,6 +160,9 @@ impl Scheduler for Mem {
         if self.broken == Some("left") {
             return Err("cannot read /u/x: denied".to_owned());
         }
+        if self.broken == Some("second left") && !self.looked.borrow().is_empty() {
+            return Err("cannot read /u/y: denied".to_owned());
+        }
         let found = Left {
             there: if *self.files.borrow() == Written::None {
                 Vec::new()
@@ -198,6 +201,11 @@ impl Scheduler for Mem {
         }
         Ok("do load".to_owned())
     }
+}
+
+fn something_left_of(mem: Mem) -> Mem {
+    *mem.something.borrow_mut() = true;
+    mem
 }
 
 fn run(mem: &Mem) -> Line {
@@ -247,6 +255,12 @@ fn a_timer_is_kept_only_when_its_files_are_the_texts_it_is_loaded_and_its_log_ha
         ),
         (
             Mem::new(Written::None, true, true),
+            Status::Updated,
+            vec!["unload", "folder", "write", "load"],
+            "every 10m, log /l/refresh.log; its unit differed",
+        ),
+        (
+            something_left_of(Mem::new(Written::None, false, true)),
             Status::Updated,
             vec!["unload", "folder", "write", "load"],
             "every 10m, log /l/refresh.log; its unit differed",
@@ -567,6 +581,16 @@ fn a_timers_removal_unloads_then_deletes() {
         broken.acts().is_empty(),
         "a question that failed is not read as nothing there"
     );
+
+    let mut second = Mem::new(Written::New, true, true);
+    second.broken = Some("second left");
+    let line = removal(&second, &job());
+    assert_eq!(
+        (line.status, line.detail.as_str()),
+        (Status::Failed, "cannot read /u/y: denied"),
+        "a second look that fails is the row, never nothing there"
+    );
+    assert_eq!(second.acts(), ["take_out"]);
 
     let mut failing = Mem::new(Written::New, true, true);
     failing.fails = Some("take_out");

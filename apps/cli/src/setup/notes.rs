@@ -10,6 +10,7 @@ use bilbo_setup::report::{Line, Status};
 use bilbo_setup::steps::Notes;
 
 use crate::console::message::Message;
+use crate::console::settings::SETUP_NOTES;
 
 pub enum Answer {
     Saved {
@@ -272,7 +273,12 @@ impl Notes for Keeper<'_> {
     fn see_to(&self) -> Line {
         let folder = &self.decision.folder;
         match &self.decision.plan {
-            Plan::Skip => return Keeper::line(Status::Skipped, "setup.notes is empty".to_owned()),
+            Plan::Skip => {
+                return Keeper::line(
+                    Status::Skipped,
+                    format!("{} is empty", SETUP_NOTES.about.name),
+                );
+            }
             Plan::Failed(detail) => return Keeper::failed(detail.clone()),
             Plan::Keep | Plan::Save => {}
         }

@@ -418,6 +418,33 @@ fn the_derive_clause_is_read_as_a_unit_will_read_it() {
         derive_row(&run),
         format!("{}{CLAUSE}", world.timer_line("derive", "30m"))
     );
+    for (name, config, said) in [
+        (
+            "setup-clause-provider",
+            "derive.enabled = true\n",
+            "; llm.provider is empty in the config and the unit",
+        ),
+        (
+            "setup-clause-in",
+            "derive.enabled = true\nllm.provider = \"anthropic\"\n",
+            "; derive.in is empty in the config and the unit",
+        ),
+    ] {
+        let world = World::new(name);
+        let program = world.bin.clone();
+        world.scratch.config(&closed(config));
+        let run = world.setup(&program);
+        assert_eq!(run.code, 0, "{name}: {}", run.stderr);
+        assert_eq!(
+            rows(&run).pop().expect("the last row"),
+            (
+                "derive-timer".to_owned(),
+                "installed".to_owned(),
+                format!("{}{said}", world.timer_line("derive", "30m"))
+            ),
+            "{name}"
+        );
+    }
 }
 
 fn expected_reads(world: &World) -> Vec<(&'static str, Vec<String>)> {
@@ -1464,4 +1491,95 @@ fn a_setup_after_a_removal_installs_again_and_finds_the_notes_followed() {
             [""; 7]
         )
     );
+}
+
+#[test]
+fn a_tool_named_by_its_flag_or_its_key_is_installed_and_removed_with_no_tool_on_path() {
+    let world = World::new("setup-named-tools");
+    let scheduler = world.scratch.dir.join("scheduler-only");
+    fs::create_dir_all(&scheduler).expect("a folder");
+    for name in ["launchctl", "systemctl"] {
+        std::os::unix::fs::symlink(world.tools.join(name), scheduler.join(name))
+            .expect("a link to the scheduler's stand-in");
+    }
+    let path = scheduler.display().to_string();
+    let tools = world.tools.display().to_string();
+    let fixture = world.fixture.display().to_string();
+    let (claude, codex, agy) = (
+        format!("{tools}/claude"),
+        format!("{tools}/codex"),
+        format!("{tools}/agy"),
+    );
+    let flags = [
+        format!("--claude={claude}"),
+        format!("--codex={codex}"),
+        format!("--agy={agy}"),
+    ];
+    let with = |args: &[&str]| world.run_with(&world.bin, args, &[("PATH", path.as_str())]);
+
+    let mut setup = vec!["setup"];
+    setup.extend(flags.iter().map(String::as_str));
+    setup.extend(["--plugin", fixture.as_str()]);
+    let run = with(&setup);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(
+        rows(&run),
+        world.expected(&world.fixture, ["installed"; 7], [""; 7])
+    );
+    for name in ["claude", "codex", "agy"] {
+        assert!(!world.programs.log(name).is_empty(), "{name} was asked");
+    }
+    for verb in ["refresh", "derive"] {
+        assert_eq!(
+            unit_path(&world.unit_text(verb)).split(':').next(),
+            Some(tools.as_str()),
+            "the {verb} unit's PATH opens with the tools' folder"
+        );
+    }
+    let mut remove = vec!["setup", "--remove"];
+    remove.extend(flags.iter().map(String::as_str));
+    let run = with(&remove);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(rows(&run), World::removed());
+
+    let world = World::new("setup-named-tools-by-key");
+    let scheduler = world.scratch.dir.join("scheduler-only");
+    fs::create_dir_all(&scheduler).expect("a folder");
+    for name in ["launchctl", "systemctl"] {
+        std::os::unix::fs::symlink(world.tools.join(name), scheduler.join(name))
+            .expect("a link to the scheduler's stand-in");
+    }
+    let path = scheduler.display().to_string();
+    let tools = world.tools.display().to_string();
+    let fixture = world.fixture.display().to_string();
+    world.scratch.config(&closed(&format!(
+        "setup.claude.program = \"{tools}/claude\"\nsetup.codex.program = \"{tools}/codex\"\nsetup.agy.program = \"{tools}/agy\"\n"
+    )));
+    let with = |args: &[&str]| world.run_with(&world.bin, args, &[("PATH", path.as_str())]);
+    let run = with(&["setup", "--plugin", fixture.as_str()]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(
+        rows(&run),
+        world.expected(&world.fixture, ["installed"; 7], [""; 7])
+    );
+    let run = with(&["setup", "--remove"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(rows(&run), World::removed());
+}
+
+fn unit_path(text: &str) -> String {
+    if cfg!(target_os = "macos") {
+        let after = text
+            .split("<key>PATH</key>")
+            .nth(1)
+            .expect("a PATH in the plist");
+        let value = after.split("<string>").nth(1).expect("a string");
+        value.split("</string>").next().expect("its end").to_owned()
+    } else {
+        let line = text
+            .lines()
+            .find_map(|line| line.strip_prefix("Environment=\"PATH="))
+            .expect("a PATH in the service");
+        line.strip_suffix('"').expect("a closing quote").to_owned()
+    }
 }

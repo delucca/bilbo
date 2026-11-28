@@ -2348,7 +2348,11 @@ fn user_step(text: &str) -> String {
 
 impl Sandbox {
     fn digest_agy(&self, input: &[u8]) -> sandbox::Run {
-        sandbox::run(self.vars_with(&[]), &["digest", "--agy"], input, None)
+        self.digest_agy_with(input, &[])
+    }
+
+    fn digest_agy_with(&self, input: &[u8], extra: &[(&str, &str)]) -> sandbox::Run {
+        sandbox::run(self.vars_with(extra), &["digest", "--agy"], input, None)
     }
 
     fn transcript(&self, steps: &str) -> String {
@@ -2374,6 +2378,37 @@ fn agy_gets_the_lists_as_one_json_line() {
     assert_eq!(
         (later.code, later.stdout, later.stderr),
         (0, String::new(), Vec::<String>::new())
+    );
+    let long = format!(
+        "{{\"type\":\"SYSTEM_MESSAGE\",\"content\":\"{}\"}}\n",
+        "x".repeat(2000)
+    );
+    let transcript = sandbox.transcript(&format!("{}{long}", user_step(PROMPT)));
+    let short = sandbox.digest_agy_with(
+        &agy_input(&fresh(), &transcript, Some("0")),
+        &[("BILBO_DIGEST_AGY_TAIL", "1 KiB")],
+    );
+    assert_eq!((short.code, short.stdout.as_str()), (0, ""));
+    assert_eq!(short.stderr.len(), 1, "{:?}", short.stderr);
+    assert!(
+        short.stderr[0].ends_with("the transcript's last steps hold no user input"),
+        "{:?}",
+        short.stderr
+    );
+    let wide = sandbox.digest_agy_with(
+        &agy_input(&fresh(), &transcript, Some("0")),
+        &[("BILBO_DIGEST_AGY_TAIL", "64 KiB")],
+    );
+    assert_eq!((wide.code, wide.stderr.clone()), (0, Vec::<String>::new()));
+    assert_eq!(wide.stdout, injected(&plain.stdout));
+
+    let empty = sandbox.transcript(&user_step("zzqqxx"));
+    let nothing = sandbox.digest_agy(&agy_input(&fresh(), &empty, Some("0")));
+    assert_eq!(
+        (nothing.code, nothing.stdout.as_str()),
+        (0, ""),
+        "{:?}",
+        nothing.stderr
     );
 }
 

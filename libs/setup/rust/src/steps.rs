@@ -9,6 +9,7 @@ use crate::timer::{self, Job, Scheduler};
 
 pub struct Request {
     pub plugin: Option<PathBuf>,
+    pub plugin_key: &'static str,
     pub program: Option<PathBuf>,
     pub logs: PathBuf,
     pub variables: Vec<(String, OsString)>,
@@ -30,6 +31,8 @@ pub enum Way {
 
 pub struct Tool {
     pub step: &'static str,
+    pub switch: &'static str,
+    pub program_key: &'static str,
     pub hooks: Option<&'static str>,
     pub way: Way,
 }
@@ -68,7 +71,7 @@ fn unavailable(tool: &Tool) -> Option<Line> {
         Way::Off => Some(line(
             step,
             Status::Skipped,
-            format!("setup.{step}.enabled is false"),
+            format!("{} is false", tool.switch),
         )),
         Way::Missing { value, default } => Some(if *default {
             line(step, Status::Skipped, format!("{step} is not on PATH"))
@@ -76,13 +79,16 @@ fn unavailable(tool: &Tool) -> Option<Line> {
             line(
                 step,
                 Status::Failed,
-                format!("setup.{step}.program: {value} is not a program this user can run"),
+                format!(
+                    "{}: {value} is not a program this user can run",
+                    tool.program_key
+                ),
             )
         } else {
             line(
                 step,
                 Status::Failed,
-                format!("setup.{step}.program: {value} is not on PATH"),
+                format!("{}: {value} is not on PATH", tool.program_key),
             )
         }),
         Way::Found { .. } => None,
@@ -98,8 +104,10 @@ fn tool_line(request: &Request, tool: &Tool) -> Line {
         _ => line(
             tool.step,
             Status::Failed,
-            "cannot find this bilbo's package; set setup.plugin to the folder that holds the plugin"
-                .to_owned(),
+            format!(
+                "cannot find this bilbo's package; set {} to the folder that holds the plugin",
+                request.plugin_key
+            ),
         ),
     }
 }

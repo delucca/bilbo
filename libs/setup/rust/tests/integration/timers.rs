@@ -566,15 +566,23 @@ fn a_unit_someone_changed_is_written_again() {
     let service = world.units.join("bilbo-derive.service");
     let wanted = fs::read_to_string(&service).expect("the service");
     fs::write(&service, format!("{wanted}Environment=\"X=1\"\n")).expect("one more line");
+    let from = fresh_log(&world);
     let line = run(&world.systemd(), &job);
     assert_eq!(line.status, Status::Updated, "{}", line.detail);
     assert_eq!(fs::read_to_string(&service).expect("the service"), wanted);
-    assert!(
-        world
-            .calls("systemctl")
+    let since = world.calls("systemctl")[from..].to_vec();
+    let at = |call: &str| {
+        since
             .iter()
-            .any(|call| call.contains("restart"))
+            .position(|held| held == call)
+            .unwrap_or_else(|| panic!("{call} is not in {since:?}"))
+    };
+    let (reload, enable, restart) = (
+        at("--user daemon-reload"),
+        at("--user enable bilbo-derive.timer"),
+        at("--user restart bilbo-derive.timer"),
     );
+    assert!(reload < enable && enable < restart, "{since:?}");
 }
 
 #[test]
@@ -1295,6 +1303,59 @@ fn a_launchd_removal_looks_whole_before_it_boots_out() {
         format!("bootout --wait {target}\tthere\n")
     );
     assert!(!plist(&world, &job).exists());
+
+    let world = self::world();
+    let job = world.job("refresh");
+    installed_by_launchd(&world, &job);
+    world
+        .programs
+        .fail("launchctl", "bootout", Fail::Exit("bootout broke"), false)
+        .expect("fail");
+    let from = world.calls("launchctl").len();
+    let line = removal(&world.launchd(), &job);
+    assert_eq!(line.status, Status::Failed);
+    assert_eq!(
+        line.detail,
+        format!("launchctl bootout --wait {target} failed: bootout broke")
+    );
+    assert!(
+        plist(&world, &job).exists(),
+        "the plist stays under a loaded label"
+    );
+    assert_eq!(
+        world.calls("launchctl")[from..],
+        [
+            format!("print {target}"),
+            format!("bootout --wait {target}"),
+        ],
+        "no print follows the failed bootout"
+    );
+
+    let world = self::world();
+    let job = world.job("refresh");
+    installed_by_launchd(&world, &job);
+    world
+        .programs
+        .leave_before_bootout(&target)
+        .expect("a label that leaves its domain");
+    let line = removal(&world.launchd(), &job);
+    assert_eq!(
+        (line.status, line.detail.as_str()),
+        (Status::Removed, label),
+        "{}",
+        line.detail
+    );
+    assert!(!plist(&world, &job).exists());
+    let log = world.calls("launchctl");
+    assert_eq!(
+        log.last().map(String::as_str),
+        Some(format!("print {target}").as_str()),
+        "the log ends with the second look"
+    );
+    assert!(
+        log.iter()
+            .any(|call| call == &format!("bootout --wait {target}"))
+    );
 
     let world = self::world();
     let job = world.job("refresh");

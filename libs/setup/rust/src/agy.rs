@@ -8,8 +8,8 @@ use serde_json::Value;
 
 use crate::keys::waited;
 use crate::plugin::{
-    Act, Agent, Held, Installed, Marketplace, NOT_JSON, Seen, Stale, Trusting, ended_badly,
-    message, unreadable,
+    Act, Agent, Held, Installed, Marketplace, NOT_JSON, PACKAGE, Seen, Stale, Trusting,
+    ended_badly, message, unreadable,
 };
 use crate::program::{self, Bounds, End, Ran};
 
@@ -35,7 +35,7 @@ impl Agy {
             Act::Install => Some(vec![
                 "plugin".to_owned(),
                 "install".to_owned(),
-                folder.join("plugins/bilbo").to_str()?.to_owned(),
+                folder.join(PACKAGE).to_str()?.to_owned(),
             ]),
             Act::Add | Act::Remove => None,
         }
@@ -157,7 +157,7 @@ impl Agent for Agy {
 
     fn look(&self, folder: &Path) -> Result<Seen, String> {
         const ARGS: [&str; 3] = ["plugin", "list", "--json"];
-        let package = package_files(&folder.join("plugins/bilbo"))?;
+        let package = package_files(&folder.join(PACKAGE))?;
         let words = format!("agy {}", ARGS.join(" "));
         let ran = self.call(&ARGS);
         if let Some(why) = ended_badly(&ran, &self.program, &waited(self.bounds.wait)) {

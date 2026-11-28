@@ -2548,4 +2548,47 @@ fn a_note_that_waited_is_judged_again_against_the_chunks_of_its_page() {
     assert_eq!(entries_of(&second), [id(2)]);
     assert_eq!(apart_entries(&second), [id(5)]);
     assert_eq!(second.skipped.copies, 1);
+
+    let mut log = Log::new();
+    log.put(
+        1,
+        "note",
+        &["alpha bravo charlie delta echo foxtrot golf hotel india juliet"],
+    );
+    log.put(
+        3,
+        "sourced",
+        &["n1 head line|many words of its own here that make this note long enough to count"],
+    );
+    log.put(5, "sourced", &["n3 head line|short words"]);
+    let index = index_of(&log);
+    let ranked = lists(&index, &[1], &[3, 5]);
+    let mut asked = with_apart("unused");
+    let (whole, _) = ask_lists(&log, &index, &ranked, &asked);
+    assert_eq!(entries_of(&whole), [id(1)]);
+    assert_eq!(apart_entries(&whole), [id(3), id(5)]);
+    let cost_of = |hits: &[Hit], entry: u8| {
+        let found: Vec<Hit> = hits
+            .iter()
+            .filter(|hit| hit.found.entry == id(entry))
+            .cloned()
+            .collect();
+        assert_eq!(found.len(), 1);
+        cost(&found)
+    };
+    asked.limits = PASS;
+    asked.budget = cost_of(&whole.hits, 1);
+    asked.apart_budget = cost_of(&whole.apart, 3) + 1;
+    assert!(cost_of(&whole.apart, 3) + cost_of(&whole.apart, 5) > asked.apart_budget);
+    assert!(cost_of(&whole.apart, 5) <= asked.apart_budget);
+    let (first, _) = ask_lists(&log, &index, &ranked, &asked);
+    assert_eq!(entries_of(&first), [id(1)]);
+    assert_eq!(apart_entries(&first), [id(3)]);
+    assert!(
+        first.more,
+        "the last note of its list waited: the page after it is not empty"
+    );
+    let (second, _) = ask_lists(&log, &index, &ranked, &on_page(&asked, 2));
+    assert_eq!(entries_of(&second), Vec::<Id>::new());
+    assert_eq!(apart_entries(&second), [id(5)]);
 }

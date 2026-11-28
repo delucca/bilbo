@@ -7,15 +7,14 @@ use serde_json::{Map, Value, json};
 
 use crate::keys::waited;
 use crate::plugin::{
-    Act, Agent, Canon, Held, Hook, Hooks, Installed, Marketplace, NOT_JSON, Other, Package, Seen,
-    Stale, Standing, Trusting, ended_badly, message, unreadable,
+    Act, Agent, Canon, Held, Hook, Hooks, Installed, KEY_PREFIX, Marketplace, NOT_JSON, Other,
+    PACKAGE, PLUGIN_ID, Package, Seen, Stale, Standing, Trusting, ended_badly, message, unreadable,
 };
 use crate::program::{self, Bounds, End, Ran};
 use crate::talk::{Calls, Fault, Talk};
 
 pub const FILE: &str = ".agents/plugins/marketplace.json";
 pub const HOOKS_FILE: &str = "plugins/bilbo/hooks/hooks.json";
-const PREFIX: &str = "bilbo@bilbo:";
 
 fn system_canon(path: &Path) -> Option<PathBuf> {
     fs::canonicalize(path).ok()
@@ -33,7 +32,7 @@ fn resolve(folder: &Path) -> Result<Package, String> {
     };
     Ok(Package {
         folder: canonical(folder.to_path_buf())?,
-        plugin: canonical(folder.join("plugins/bilbo"))?,
+        plugin: canonical(folder.join(PACKAGE))?,
     })
 }
 
@@ -78,9 +77,9 @@ impl Codex {
 
     fn arguments(act: Act, folder: &Path) -> Option<Vec<String>> {
         let words: Vec<&str> = match act {
-            Act::Uninstall => vec!["plugin", "remove", "bilbo@bilbo", "--json"],
+            Act::Uninstall => vec!["plugin", "remove", PLUGIN_ID, "--json"],
             Act::Remove => vec!["plugin", "marketplace", "remove", "bilbo", "--json"],
-            Act::Install => vec!["plugin", "add", "bilbo@bilbo", "--json"],
+            Act::Install => vec!["plugin", "add", PLUGIN_ID, "--json"],
             Act::Add => {
                 return Some(
                     ["plugin", "marketplace", "add", folder.to_str()?, "--json"]
@@ -147,7 +146,7 @@ pub fn held_plugins(bytes: &[u8]) -> Option<(bool, Option<Other>)> {
     for item in items(bytes, "installed")? {
         let id = text(&item, "pluginId")?;
         let market = text(&item, "marketplaceName")?;
-        if id == "bilbo@bilbo" {
+        if id == PLUGIN_ID {
             plugin = true;
         } else if market == "bilbo" && other.is_none() {
             other = Some(Other { id, scope: None });
@@ -167,7 +166,7 @@ pub fn read_plugins(
     for item in items(bytes, "installed")? {
         let id = text(&item, "pluginId")?;
         let market = text(&item, "marketplaceName")?;
-        if id == "bilbo@bilbo" {
+        if id == PLUGIN_ID {
             let on = item.get("enabled").and_then(Value::as_bool)?;
             let listed_version = text(&item, "version")?;
             let path = text(item.get("source")?, "path")?;
@@ -214,13 +213,13 @@ pub fn read_manifest(bytes: &[u8], folder: &Path) -> Result<(), String> {
         && source
             .and_then(|source| source.get("path"))
             .and_then(Value::as_str)
-            == Some("./plugins/bilbo");
+            == Some(format!("./{PACKAGE}").as_str());
     if local {
         Ok(())
     } else {
-        Err(no(
-            "takes the plugin bilbo from another folder than ./plugins/bilbo",
-        ))
+        Err(no(&format!(
+            "takes the plugin bilbo from another folder than ./{PACKAGE}"
+        )))
     }
 }
 
@@ -234,7 +233,7 @@ impl Agent for Codex {
     }
 
     fn id(&self) -> &'static str {
-        "bilbo@bilbo"
+        PLUGIN_ID
     }
 
     fn manifest(&self, folder: &Path) -> Result<(), String> {
@@ -436,11 +435,11 @@ fn hooks_of(reply: &Value) -> Option<Vec<&Map<String, Value>>> {
 }
 
 fn belongs(hook: &Map<String, Value>) -> bool {
-    hook.get("pluginId").and_then(Value::as_str) == Some("bilbo@bilbo")
+    hook.get("pluginId").and_then(Value::as_str) == Some(PLUGIN_ID)
         || hook
             .get("key")
             .and_then(Value::as_str)
-            .is_some_and(|key| key.starts_with(PREFIX))
+            .is_some_and(|key| key.starts_with(KEY_PREFIX))
 }
 
 fn another(handler: &Handler, hook: &Map<String, Value>) -> Option<&'static str> {
@@ -495,7 +494,7 @@ pub fn read_hooks(declared: &[u8], file: &Path, reply: &Value) -> Result<Vec<Hoo
         if !hook
             .get("key")
             .and_then(Value::as_str)
-            .is_some_and(|key| key.starts_with(PREFIX))
+            .is_some_and(|key| key.starts_with(KEY_PREFIX))
         {
             return Err(format!(
                 "Codex lists the hook {key} for bilbo@bilbo, and its key names another plugin"
@@ -503,7 +502,7 @@ pub fn read_hooks(declared: &[u8], file: &Path, reply: &Value) -> Result<Vec<Hoo
         }
     }
     for hook in &mine {
-        if hook.get("pluginId").and_then(Value::as_str) != Some("bilbo@bilbo") {
+        if hook.get("pluginId").and_then(Value::as_str) != Some(PLUGIN_ID) {
             return Err(format!(
                 "Codex lists the hook {} under the plugin {}",
                 shown(hook.get("key")),
@@ -670,8 +669,6 @@ impl<C: Calls> Over<C> {
     }
 }
 
-const TRUST_PREFIX: &str = "bilbo@bilbo:";
-
 fn read_keys(reply: &Value) -> Result<Vec<String>, String> {
     let Some(config) = reply.get("config").and_then(Value::as_object) else {
         return Err(NOT_READ_CONFIG.to_owned());
@@ -687,7 +684,7 @@ fn read_keys(reply: &Value) -> Result<Vec<String>, String> {
     };
     Ok(state
         .keys()
-        .filter(|key| key.starts_with(TRUST_PREFIX))
+        .filter(|key| key.starts_with(KEY_PREFIX))
         .cloned()
         .collect())
 }

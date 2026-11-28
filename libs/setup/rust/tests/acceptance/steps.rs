@@ -226,11 +226,28 @@ impl Scheduler for Timers {
     }
 }
 
+fn switch_of(step: &str) -> &'static str {
+    match step {
+        "claude" => "setup.claude.enabled",
+        "codex" => "setup.codex.enabled",
+        _ => "setup.agy.enabled",
+    }
+}
+
+fn program_of(step: &str) -> &'static str {
+    match step {
+        "claude" => "setup.claude.program",
+        "codex" => "setup.codex.program",
+        _ => "setup.agy.program",
+    }
+}
+
 fn request(config: &str, clause: Option<&str>) -> Request {
     let file = File::parse(Path::new("/c/config.toml"), config.as_bytes()).expect("toml");
     let var = |_: &str| None::<OsString>;
     Request {
         plugin: Some(PathBuf::from("/pkg")),
+        plugin_key: "setup.plugin",
         program: Some(PathBuf::from("/opt/bilbo/bin/bilbo")),
         logs: PathBuf::from("/l"),
         variables: vec![("HOME".to_owned(), OsString::from("/home/me"))],
@@ -253,6 +270,8 @@ fn found(
 ) -> Tool {
     Tool {
         step,
+        switch: switch_of(step),
+        program_key: program_of(step),
         hooks,
         way: Way::Found {
             agent: Box::new(Fake {
@@ -276,6 +295,8 @@ fn found(
 fn tool(step: &'static str, way: Way) -> Tool {
     Tool {
         step,
+        switch: switch_of(step),
+        program_key: program_of(step),
         hooks: (step == "codex").then_some("codex-hooks"),
         way,
     }
@@ -315,6 +336,8 @@ fn timers() -> (Timing, Rc<RefCell<Vec<Job>>>) {
 fn bare(step: &'static str, hooks: &'static str, log: &Log) -> Tool {
     Tool {
         step,
+        switch: switch_of(step),
+        program_key: program_of(step),
         hooks: Some(hooks),
         way: Way::Found {
             agent: Box::new(Fake {
@@ -888,6 +911,8 @@ fn a_removal_runs_the_hooks_before_their_tool_and_no_notes_step() {
     let (timing, _) = timers_in(&log);
     let claude = Tool {
         step: "claude",
+        switch: switch_of("claude"),
+        program_key: program_of("claude"),
         hooks: None,
         way: Way::Found {
             agent: Box::new(Fake {
@@ -955,6 +980,8 @@ fn a_removal_runs_the_hooks_before_their_tool_and_no_notes_step() {
 fn codex_with(log: &Log, plugin: bool, keys: &[&str], opts: Opts) -> Tool {
     Tool {
         step: "codex",
+        switch: switch_of("codex"),
+        program_key: program_of("codex"),
         hooks: Some("codex-hooks"),
         way: Way::Found {
             agent: Box::new(Fake {
@@ -1195,6 +1222,8 @@ fn a_removal_stops_at_another_installation() {
     let (timing, _) = timers_in(&log);
     let other = Tool {
         step: "codex",
+        switch: switch_of("codex"),
+        program_key: program_of("codex"),
         hooks: Some("codex-hooks"),
         way: Way::Found {
             agent: Box::new(Fake {

@@ -39,6 +39,7 @@ struct Sim {
     brings_other: bool,
     stays_listed: bool,
     lingers: Option<(bool, bool)>,
+    looks_fail_after: Option<String>,
     commanded: RefCell<bool>,
     manifest: Result<(), String>,
 }
@@ -67,6 +68,7 @@ impl Sim {
             brings_other: false,
             stays_listed: false,
             lingers: None,
+            looks_fail_after: None,
             commanded: RefCell::new(false),
             manifest: Ok(()),
         }
@@ -118,6 +120,9 @@ impl Agent for Sim {
 
     fn look(&self, _folder: &Path) -> Result<Seen, String> {
         self.log.borrow_mut().push("look".to_owned());
+        if let (Some(said), true) = (&self.looks_fail_after, *self.commanded.borrow()) {
+            return Err(said.clone());
+        }
         let state = self.state.borrow();
         Ok(Seen {
             marketplace: match state.market {
@@ -163,6 +168,9 @@ impl Agent for Sim {
 
     fn held(&self) -> Result<Held, String> {
         self.log.borrow_mut().push("held".to_owned());
+        if let (Some(said), true) = (&self.looks_fail_after, *self.commanded.borrow()) {
+            return Err(said.clone());
+        }
         if let (Some((plugin, marketplace)), true) = (self.lingers, *self.commanded.borrow()) {
             return Ok(Held {
                 plugin,
@@ -289,6 +297,16 @@ fn a_plugin_step_looks_changes_and_looks_again() {
             line.detail
         );
     }
+
+    let mut sim = Sim::new(Market::None, None);
+    sim.looks_fail_after = Some("claude plugin list --json: it broke".to_owned());
+    let line = run(&sim);
+    assert_eq!(
+        (line.status, line.detail.as_str()),
+        (Status::Failed, "claude plugin list --json: it broke"),
+        "a look after the commands that fails is the row"
+    );
+    assert_eq!(commands(&sim), ["add", "install"]);
 }
 
 #[test]
@@ -581,6 +599,16 @@ fn a_removal_takes_out_what_the_tool_lists() {
         assert_eq!(line.detail, said, "{lingers:?}");
         assert_eq!(commands_but_held(&sim), ["uninstall", "remove"]);
     }
+
+    let mut sim = Sim::new(Market::Here, Some((true, true)));
+    sim.looks_fail_after = Some("claude plugin list --json: it broke".to_owned());
+    let line = taking(&sim);
+    assert_eq!(
+        (line.status, line.detail.as_str()),
+        (Status::Failed, "claude plugin list --json: it broke"),
+        "a look after the commands that fails is the row"
+    );
+    assert_eq!(commands_but_held(&sim), ["uninstall", "remove"]);
 }
 
 #[test]

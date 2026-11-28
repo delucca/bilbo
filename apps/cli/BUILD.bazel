@@ -340,6 +340,7 @@ bilbo_rust_test(
     srcs = ["tests/plugin.rs"],
     data = [
         "//:.claude-plugin/marketplace.json",
+        "//:flake.nix",
         "//:plugin",
     ],
     env = {"PLUGIN_ANCHOR": "$(rlocationpath //:.claude-plugin/marketplace.json)"},
@@ -347,6 +348,7 @@ bilbo_rust_test(
     lint_config = ":lints",
     version = BILBO_VERSION,
     deps = [
+        ":bilbo_cli",
         "@crates//:serde_json",
     ] + all_crate_deps(normal_dev = True),
 )

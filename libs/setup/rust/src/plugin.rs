@@ -3,6 +3,10 @@ use std::path::{Path, PathBuf};
 use crate::program::{End, Ran};
 use crate::report::{Line, Status};
 
+pub const PLUGIN_ID: &str = "bilbo@bilbo";
+pub const KEY_PREFIX: &str = "bilbo@bilbo:";
+pub const PACKAGE: &str = "plugins/bilbo";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Marketplace {
     NotUsed,

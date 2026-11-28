@@ -154,7 +154,7 @@ fn each_key_shows_the_source_that_won_a_variable_over_the_file_over_the_default(
              setup.timer.path = \"/usr/bin:/bin:/usr/sbin:/sbin\" (default)\n\
              setup.refresh.every = \"10m\" (default)\n\
              setup.derive.every = \"30m\" (default)\n\
-             setup.wait = \"30s\" (default)\n\
+             setup.wait = \"3m\" (default)\n\
              setup.poll = \"5ms\" (default)\n\
              markdown.heading_width = 100 (default)\n\
              session.unpack_floor = \"128 MiB\" (default)\n\

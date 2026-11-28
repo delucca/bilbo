@@ -578,3 +578,30 @@ fn the_skills_name_the_commands_and_lines_bilbo_has() {
         assert!(note.contains(&format!("`{text}`")), "note: {text}");
     }
 }
+
+#[test]
+fn the_flakes_setup_variables_are_the_setup_keys() {
+    let flake = fs::read_to_string(root().join("flake.nix")).expect("the flake");
+    let list = flake
+        .split("setupVariables = [")
+        .nth(1)
+        .and_then(|rest| rest.split("];").next())
+        .expect("the flake's list of setup variables");
+    let named: BTreeSet<String> = list
+        .split('"')
+        .skip(1)
+        .step_by(2)
+        .map(str::to_owned)
+        .collect();
+    let keys: BTreeSet<String> =
+        bilbo_cli::console::settings::keys(&bilbo_cli::kind_keys(), &bilbo_cli::provider_keys())
+            .into_iter()
+            .filter(|about| about.name.starts_with("setup."))
+            .filter_map(|about| about.variable.map(str::to_owned))
+            .collect();
+    assert!(!keys.is_empty());
+    assert_eq!(
+        named, keys,
+        "the flake's setupVariables and the CLI's setup keys"
+    );
+}

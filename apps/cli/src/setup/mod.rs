@@ -28,8 +28,9 @@ use crate::console::env::Env;
 use crate::console::message::sanitize;
 use crate::console::outcome::{Exit, Failure, Outcome};
 use crate::console::settings::{
-    self, Group, KindKey, SETUP_AGY_PROGRAM, SETUP_CLAUDE_PROGRAM, SETUP_CODEX_PROGRAM,
-    SETUP_NOTES, SETUP_PLUGIN, Settings, folder_variables,
+    self, Group, KindKey, SETUP_AGY_ENABLED, SETUP_AGY_PROGRAM, SETUP_CLAUDE_ENABLED,
+    SETUP_CLAUDE_PROGRAM, SETUP_CODEX_ENABLED, SETUP_CODEX_PROGRAM, SETUP_NOTES, SETUP_PLUGIN,
+    SETUP_TIMER_LOGS, Settings, folder_variables,
 };
 
 const SUMMARY: &str = "Install the plugin and the timers on this machine";
@@ -156,11 +157,11 @@ fn canonical_or_given(path: PathBuf) -> PathBuf {
 
 fn clause(settings: &Settings) -> Option<String> {
     let said = if !settings.derive.enabled.value {
-        "derive.enabled is false"
+        format!("{} is false", bilbo_derive::keys::ENABLED.about.name)
     } else if settings.llm.provider.value.is_empty() {
-        "llm.provider is empty"
+        format!("{} is empty", bilbo_llm::keys::PROVIDER.about.name)
     } else if settings.derive.named.value.is_empty() {
-        "derive.in is empty"
+        format!("{} is empty", bilbo_derive::keys::IN.about.name)
     } else {
         return None;
     };
@@ -179,16 +180,35 @@ fn tools_of(
 ) -> [Tool; 3] {
     let [claude, codex, agy] = programs;
     [
-        ("claude", None, settings.setup.claude_enabled.value, claude),
+        (
+            "claude",
+            None,
+            settings.setup.claude_enabled.value,
+            claude,
+            (
+                SETUP_CLAUDE_ENABLED.about.name,
+                SETUP_CLAUDE_PROGRAM.about.name,
+            ),
+        ),
         (
             "codex",
             Some("codex-hooks"),
             settings.setup.codex_enabled.value,
             codex,
+            (
+                SETUP_CODEX_ENABLED.about.name,
+                SETUP_CODEX_PROGRAM.about.name,
+            ),
         ),
-        ("agy", None, settings.setup.agy_enabled.value, agy),
+        (
+            "agy",
+            None,
+            settings.setup.agy_enabled.value,
+            agy,
+            (SETUP_AGY_ENABLED.about.name, SETUP_AGY_PROGRAM.about.name),
+        ),
     ]
-    .map(|(step, hooks, enabled, program)| {
+    .map(|(step, hooks, enabled, program, (switch, program_key))| {
         let way = if enabled {
             let value = program.value.to_string_lossy().into_owned();
             match program::find(&program.value, path) {
@@ -204,7 +224,13 @@ fn tools_of(
         } else {
             Way::Off
         };
-        Tool { step, hooks, way }
+        Tool {
+            step,
+            switch,
+            program_key,
+            hooks,
+            way,
+        }
     })
 }
 
@@ -332,9 +358,10 @@ pub fn run(
                 )
             } else {
                 format!(
-                    "setup.notes names {}, inside the store root {}, which holds only segments; set setup.notes to a folder outside the root",
+                    "{key} names {}, inside the store root {}, which holds only segments; set {key} to a folder outside the root",
                     folder.display(),
-                    root.display()
+                    root.display(),
+                    key = SETUP_NOTES.about.name
                 )
             }
         })?;
@@ -344,9 +371,10 @@ pub fn run(
     {
         inside(&layout, folder, |folder, root| {
             format!(
-                "the config file's folder {} is inside the store root {}, which holds only segments; set paths.root to a folder outside it",
+                "the config file's folder {} is inside the store root {}, which holds only segments; set {key} to a folder outside it",
                 folder.display(),
-                root.display()
+                root.display(),
+                key = settings::ROOT.about.name
             )
         })?;
     }
@@ -359,9 +387,10 @@ pub fn run(
     if hand.schedule.is_some() {
         inside(&layout, &logs, |folder, root| {
             format!(
-                "setup.timer.logs names {}, inside the store root {}, which holds only segments; set setup.timer.logs to a folder outside the root",
+                "{key} names {}, inside the store root {}, which holds only segments; set {key} to a folder outside the root",
                 folder.display(),
-                root.display()
+                root.display(),
+                key = SETUP_TIMER_LOGS.about.name
             )
         })?;
     }
@@ -370,9 +399,10 @@ pub fn run(
             let units = (schedule.units)()?;
             inside(&layout, &units, |folder, root| {
                 format!(
-                    "the units' folder {} is inside the store root {}, which holds only segments; set paths.root to a folder outside it",
+                    "the units' folder {} is inside the store root {}, which holds only segments; set {key} to a folder outside it",
                     folder.display(),
-                    root.display()
+                    root.display(),
+                    key = settings::ROOT.about.name
                 )
             })?;
             Some(units)
@@ -446,6 +476,7 @@ pub fn run(
 
     let request = Request {
         plugin: package,
+        plugin_key: SETUP_PLUGIN.about.name,
         program: own,
         logs,
         variables: carried.clone(),

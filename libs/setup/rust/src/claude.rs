@@ -6,8 +6,8 @@ use serde_json::Value;
 
 use crate::keys::waited;
 use crate::plugin::{
-    Act, Agent, Canon, Held, Installed, Marketplace, NOT_JSON, Other, Package, Seen, Stale,
-    Trusting, ended_badly, message, unreadable,
+    Act, Agent, Canon, Held, Installed, Marketplace, NOT_JSON, Other, PACKAGE, PLUGIN_ID, Package,
+    Seen, Stale, Trusting, ended_badly, message, unreadable,
 };
 use crate::program::{self, Bounds, End, Ran};
 
@@ -29,7 +29,7 @@ fn resolve(folder: &Path) -> Result<Package, String> {
     };
     Ok(Package {
         folder: canonical(folder.to_path_buf())?,
-        plugin: canonical(folder.join("plugins/bilbo"))?,
+        plugin: canonical(folder.join(PACKAGE))?,
     })
 }
 
@@ -98,7 +98,7 @@ pub fn held_plugins(bytes: &[u8]) -> Option<(bool, Option<Other>)> {
     for item in array(bytes)? {
         let id = text(&item, "id")?;
         let scope = text(&item, "scope")?;
-        if id == "bilbo@bilbo" && scope == "user" {
+        if id == PLUGIN_ID && scope == "user" {
             plugin = true;
         } else if id.ends_with("@bilbo") && other.is_none() {
             other = Some(Other {
@@ -120,7 +120,7 @@ pub fn read_plugins(
     for item in array(bytes)? {
         let id = text(&item, "id")?;
         let scope = text(&item, "scope")?;
-        if id == "bilbo@bilbo" && scope == "user" {
+        if id == PLUGIN_ID && scope == "user" {
             let on = item.get("enabled").and_then(Value::as_bool)?;
             let stale = match item.get("readFromFolder") {
                 None => Some(Stale::NoFolder),
@@ -192,10 +192,10 @@ pub fn read_manifest(bytes: &[u8], folder: &Path) -> Result<(), String> {
     else {
         return Err(no("names no plugin bilbo"));
     };
-    if item.get("source").and_then(Value::as_str) != Some("./plugins/bilbo") {
-        return Err(no(
-            "takes the plugin bilbo from another folder than ./plugins/bilbo",
-        ));
+    if item.get("source").and_then(Value::as_str) != Some(format!("./{PACKAGE}").as_str()) {
+        return Err(no(&format!(
+            "takes the plugin bilbo from another folder than ./{PACKAGE}"
+        )));
     }
     match item.get("dependencies") {
         None => Ok(()),
@@ -231,7 +231,7 @@ impl Agent for Claude {
     }
 
     fn id(&self) -> &'static str {
-        "bilbo@bilbo"
+        PLUGIN_ID
     }
 
     fn manifest(&self, folder: &Path) -> Result<(), String> {
@@ -312,9 +312,9 @@ impl Agent for Claude {
 impl Claude {
     fn arguments(act: Act, folder: &Path) -> Option<Vec<String>> {
         let words: Vec<&str> = match act {
-            Act::Uninstall => vec!["plugin", "uninstall", "bilbo@bilbo", "--json"],
+            Act::Uninstall => vec!["plugin", "uninstall", PLUGIN_ID, "--json"],
             Act::Remove => vec!["plugin", "marketplace", "remove", "bilbo", "--json"],
-            Act::Install => vec!["plugin", "install", "bilbo@bilbo", "--json"],
+            Act::Install => vec!["plugin", "install", PLUGIN_ID, "--json"],
             Act::Add => {
                 return Some(vec![
                     "plugin".to_owned(),

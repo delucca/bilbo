@@ -88,8 +88,6 @@ def more_line(budget, text, scope=None):
 
 
 def parse(question, form, stdout, more=None):
-    """The hits of one recall output: a header line, then exactly as many lines as it says, to the end. After the
-    last hit the one line `more` (the next page's) can stand, and nothing else."""
     lines = stdout.split("\n")
     if lines.pop() != "":
         sys.exit(f"search: {question}/{form}: stdout does not end with a line feed")

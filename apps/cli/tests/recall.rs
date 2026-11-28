@@ -3043,6 +3043,37 @@ fn a_query_that_starts_with_an_equals_sign_is_quoted_in_the_more_line() {
         "more: bilbo recall --page 2 --budget 256 -- '=ls'",
     );
     assert!(!found.is_empty());
+
+    let (folder, file) = (sandbox.path("notes"), sandbox.path("notes/long.md"));
+    for path in [&folder, &file] {
+        assert!(
+            path.chars()
+                .all(|c| c.is_ascii_alphanumeric() || "/._-+:@%,=".contains(c)),
+            "the scratch path needs no quotes: {path}"
+        );
+    }
+    let run = sandbox.run_with(
+        &[
+            "recall",
+            &format!("--in={folder}"),
+            &format!("--in={file}"),
+            "--kind",
+            "markdown",
+            "--budget",
+            "256",
+            "--",
+            "ls",
+        ],
+        &SMALL_PAGE,
+    );
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let found = hits_trailed(
+        &run.stdout,
+        &format!(
+            "more: bilbo recall --page 2 --in={folder} --in={file} --kind markdown --budget 256 -- ls"
+        ),
+    );
+    assert!(!found.is_empty());
 }
 
 #[test]

@@ -1117,6 +1117,31 @@ fn a_removal_does_not_ask_about_the_root() {
         root.join("notes").is_dir(),
         "the removal wrote nothing there"
     );
+    if has_a_scheduler() {
+        let refused = Sandbox::new("setup-remove-no-home");
+        refused.put(FOLLOWS);
+        let mut vars = refused.vars();
+        vars.remove("HOME");
+        vars.remove("XDG_CONFIG_HOME");
+        vars.insert(
+            "XDG_DATA_HOME".to_owned(),
+            refused.dir.join("data").into_os_string(),
+        );
+        let run = bilbo(vars, &["setup", "--remove"]);
+        assert_eq!(
+            run.stdout,
+            "claude\tskipped\tclaude is not on PATH\ncodex-hooks\tskipped\tthe codex step was skipped\ncodex\tskipped\tcodex is not on PATH\nagy\tskipped\tagy is not on PATH\nrefresh-timer\tfailed\tHOME is not set\nderive-timer\tfailed\tHOME is not set\n",
+            "{:?}",
+            run.stderr
+        );
+        assert_eq!(run.code, 1, "{:?}", run.stderr);
+        assert_eq!(
+            run.stderr.last().map(String::as_str),
+            Some(
+                "bilbo: 2 steps failed: refresh-timer, derive-timer; bilbo setup --remove tries them again"
+            )
+        );
+    }
 }
 
 #[test]

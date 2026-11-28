@@ -74,7 +74,7 @@ pub const WAIT: Key<Duration> = Key {
     about: About {
         name: "setup.wait",
         variable: Some("BILBO_SETUP_WAIT"),
-        default: Default::Toml(r#""30s""#),
+        default: Default::Toml(r#""3m""#),
         allowed: "between 1s and 10m",
         doc: "How long bilbo setup waits for one command of a tool or of the scheduler to end and close its output, and for Codex's app-server to take one request and answer it.",
     },
@@ -165,7 +165,7 @@ mod tests {
         assert_eq!(defaults.timer_path.value, "/usr/bin:/bin:/usr/sbin:/sbin");
         assert_eq!(defaults.refresh_every.value, Duration::from_secs(600));
         assert_eq!(defaults.derive_every.value, Duration::from_secs(1800));
-        assert_eq!(defaults.wait.value, Duration::from_secs(30));
+        assert_eq!(defaults.wait.value, Duration::from_secs(180));
         assert_eq!(defaults.poll.value, Duration::from_millis(5));
         let shown: Vec<String> = defaults
             .shown()
@@ -178,7 +178,7 @@ mod tests {
                 "setup.timer.path = \"/usr/bin:/bin:/usr/sbin:/sbin\"",
                 "setup.refresh.every = \"10m\"",
                 "setup.derive.every = \"30m\"",
-                "setup.wait = \"30s\"",
+                "setup.wait = \"3m\"",
                 "setup.poll = \"5ms\"",
             ]
         );
