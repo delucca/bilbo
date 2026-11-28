@@ -21,11 +21,17 @@ pub struct Skipped {
     pub capped: u64,
 }
 
-pub(super) struct Selection {
-    limits: Limits,
+#[derive(Default)]
+struct Memory {
     kept: HashMap<Id, Vec<(u64, u64)>>,
     digests: HashSet<u64>,
     runs: HashSet<String>,
+}
+
+pub(super) struct Selection {
+    limits: Limits,
+    main: Memory,
+    apart: Memory,
     skipped: Skipped,
 }
 
@@ -40,9 +46,9 @@ fn ends(found: &Found) -> (u64, u64) {
 }
 
 /// The most kept ranges that hold one record of `first..=last`.
-fn deepest(kept: &[(u64, u64)], first: u64, last: u64) -> usize {
+fn deepest(kept: &[&[(u64, u64)]], first: u64, last: u64) -> usize {
     let mut events: Vec<(u128, i8)> = Vec::new();
-    for &(from, to) in kept {
+    for &(from, to) in kept.iter().copied().flatten() {
         if to < first || from > last {
             continue;
         }
@@ -73,35 +79,48 @@ impl Selection {
     pub(super) fn new(limits: Limits) -> Selection {
         Selection {
             limits,
-            kept: HashMap::new(),
-            digests: HashSet::new(),
-            runs: HashSet::new(),
+            main: Memory::default(),
+            apart: Memory::default(),
             skipped: Skipped::default(),
         }
     }
 
     pub(super) fn admits(&mut self, found: &Found) -> bool {
-        let kept = self.kept.get(&found.entry).map_or(&[][..], Vec::as_slice);
-        if self.limits.per_entry != 0 && kept.len() >= self.limits.per_entry {
+        self.admits_in(found, false)
+    }
+
+    pub(super) fn admits_apart(&mut self, found: &Found) -> bool {
+        self.admits_in(found, true)
+    }
+
+    fn admits_in(&mut self, found: &Found, apart: bool) -> bool {
+        let main: &[(u64, u64)] = self.main.kept.get(&found.entry).map_or(&[], Vec::as_slice);
+        let own: &[(u64, u64)] = if apart {
+            self.apart.kept.get(&found.entry).map_or(&[], Vec::as_slice)
+        } else {
+            &[]
+        };
+        if self.limits.per_entry != 0 && main.len() + own.len() >= self.limits.per_entry {
             self.skipped.capped += 1;
             return false;
         }
         if self.limits.per_record != 0 {
             let (first, last) = ends(found);
-            if deepest(kept, first, last) >= self.limits.per_record {
+            if deepest(&[main, own], first, last) >= self.limits.per_record {
                 self.skipped.parts += 1;
                 return false;
             }
         }
-        if self.limits.copy_share > 0.0 && self.digests.contains(&found.digest) {
+        let seen = self.main.digests.contains(&found.digest)
+            || (apart && self.apart.digests.contains(&found.digest));
+        if self.limits.copy_share > 0.0 && seen {
             self.skipped.copies += 1;
             return false;
         }
         true
     }
 
-    pub(super) fn keeps(&mut self, hit: &Hit) -> bool {
-        let mut runs = HashSet::new();
+    fn runs(&self, hit: &Hit) -> HashSet<String> {
         if self.limits.copy_share > 0.0 {
             let body = if hit.headed {
                 hit.text
@@ -110,18 +129,35 @@ impl Selection {
             } else {
                 &hit.text
             };
-            runs = runs_of(body, self.limits.copy_words);
-            if !runs.is_empty() {
-                let shared = runs.iter().filter(|run| self.runs.contains(*run)).count();
-                if shared as f64 / runs.len() as f64 >= self.limits.copy_share {
-                    self.skipped.copies += 1;
-                    return false;
-                }
+            runs_of(body, self.limits.copy_words)
+        } else {
+            HashSet::new()
+        }
+    }
+
+    pub(super) fn keeps(&mut self, hit: &Hit) -> bool {
+        let runs = self.runs(hit);
+        if !runs.is_empty() {
+            let shared = runs
+                .iter()
+                .filter(|run| {
+                    self.main.runs.contains(*run) || (hit.apart && self.apart.runs.contains(*run))
+                })
+                .count();
+            if shared as f64 / runs.len() as f64 >= self.limits.copy_share {
+                self.skipped.copies += 1;
+                return false;
             }
         }
-        self.runs.extend(runs);
-        self.digests.insert(hit.found.digest);
-        self.kept
+        let memory = if hit.apart {
+            &mut self.apart
+        } else {
+            &mut self.main
+        };
+        memory.runs.extend(runs);
+        memory.digests.insert(hit.found.digest);
+        memory
+            .kept
             .entry(hit.found.entry)
             .or_default()
             .push(ends(&hit.found));
@@ -424,5 +460,95 @@ mod tests {
                 capped: 1
             }
         );
+    }
+
+    fn apart(entry: u8, digest: u64, text: &str) -> Hit {
+        Hit {
+            apart: true,
+            ..plain(entry, digest, text)
+        }
+    }
+
+    fn keep_apart(selection: &mut Selection, hit: &Hit) -> bool {
+        selection.admits_apart(&hit.found) && selection.keeps(hit)
+    }
+
+    #[test]
+    fn a_hit_apart_is_judged_against_both_lists_and_a_main_hit_against_its_own() {
+        const A: &str = "alpha bravo charlie delta echo foxtrot golf hotel";
+        const B: &str = "india juliet kilo lima mike november oscar papa";
+        let mut selection = Selection::new(LIMITS);
+        assert!(keep(&mut selection, &plain(1, 10, A)));
+        assert!(!selection.admits_apart(&found(2, 1, 1, 0, 10)));
+        assert!(selection.admits_apart(&found(3, 1, 1, 0, 11)));
+        assert!(!selection.keeps(&apart(3, 11, A)));
+        assert_eq!(selection.skipped().copies, 2);
+        assert!(keep_apart(&mut selection, &apart(4, 12, B)));
+        assert!(selection.admits(&found(5, 1, 1, 0, 12)));
+        assert!(keep(&mut selection, &plain(5, 13, B)));
+        assert_eq!(selection.skipped().copies, 2);
+        assert!(selection.admits_apart(&found(6, 1, 1, 0, 14)));
+        assert!(!selection.keeps(&apart(6, 14, B)));
+        assert_eq!(selection.skipped().copies, 3);
+
+        let mut capped = Selection::new(Limits {
+            per_entry: 1,
+            per_record: 0,
+            copy_share: 0.0,
+            copy_words: 5,
+        });
+        assert!(keep(&mut capped, &plain(1, 1, "main")));
+        assert!(keep_apart(&mut capped, &apart(2, 2, "apart")));
+        assert!(!capped.admits_apart(&found(2, 5, 1, 0, 3)));
+        assert_eq!(capped.skipped().capped, 1);
+        assert!(!capped.admits_apart(&found(1, 5, 1, 0, 4)));
+        assert_eq!(capped.skipped().capped, 2);
+        assert!(capped.admits(&found(2, 5, 1, 0, 5)));
+    }
+
+    #[test]
+    fn the_caps_of_a_candidate_apart_count_its_entrys_hits_in_both_lists() {
+        let caps = |per_entry, per_record| {
+            Selection::new(Limits {
+                per_entry,
+                per_record,
+                copy_share: 0.5,
+                copy_words: 5,
+            })
+        };
+        let mut shared = caps(0, 2);
+        assert!(keep(&mut shared, &hit(1, 1, 1, 0, 1, "main words one")));
+        let held = Hit {
+            apart: true,
+            ..hit(1, 1, 1, 0, 2, "apart words two")
+        };
+        assert!(keep_apart(&mut shared, &held));
+        assert!(!shared.admits_apart(&found(1, 1, 1, 0, 3)));
+        assert_eq!(shared.skipped().parts, 1);
+        assert!(shared.admits(&found(1, 1, 1, 0, 4)));
+
+        let mut apart_of_other = caps(0, 2);
+        assert!(keep(
+            &mut apart_of_other,
+            &hit(1, 1, 1, 0, 1, "main words one")
+        ));
+        let far = Hit {
+            apart: true,
+            ..hit(1, 5, 1, 0, 2, "apart words two")
+        };
+        assert!(keep_apart(&mut apart_of_other, &far));
+        assert!(apart_of_other.admits_apart(&found(1, 1, 5, 0, 3)));
+        assert_eq!(apart_of_other.skipped(), Skipped::default());
+
+        let mut entries = caps(2, 0);
+        assert!(keep(&mut entries, &hit(1, 1, 1, 0, 1, "main words one")));
+        let held = Hit {
+            apart: true,
+            ..hit(1, 5, 1, 0, 2, "apart words two")
+        };
+        assert!(keep_apart(&mut entries, &held));
+        assert!(!entries.admits_apart(&found(1, 9, 1, 0, 3)));
+        assert_eq!(entries.skipped().capped, 1);
+        assert!(entries.admits(&found(1, 9, 1, 0, 4)));
     }
 }

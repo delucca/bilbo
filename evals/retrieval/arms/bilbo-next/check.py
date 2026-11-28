@@ -10,6 +10,7 @@ import json
 import re
 import subprocess
 import sys
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 
@@ -57,12 +58,31 @@ def run(name, *args, binary=BILBO, store=STORE, env=None):
     return done.returncode, done.stdout.decode(), done.stderr.decode()
 
 
-def parsed(stdout):
+REORDERS = set("\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")
+
+
+def word(text):
+    if text and not text.startswith("=") and all(c.isascii() and (c.isalnum() or c in "/._-+:@%,=") for c in text):
+        return text
+    return "'" + text.replace("'", "'\\''") + "'"
+
+
+def more_line(budget, words, scope=None, kind=None):
+    query = " ".join(words)
+    if any(unicodedata.category(c) == "Cc" or c in REORDERS for c in query + (scope or "")):
+        return "more: the same command with --page 2"
+    flags = (f" --in={word(scope)}" if scope is not None else "") + (f" --kind {word(kind)}" if kind else "")
+    return f"more: bilbo recall --page 2{flags} --budget {word(str(budget))} -- {word(query)}"
+
+
+def parsed(stdout, more=None):
     lines = stdout.split("\n")
     if lines.pop() != "":
         return None
     found, i = [], 0
     while i < len(lines):
+        if found and more is not None and i == len(lines) - 1 and lines[i] == more:
+            break
         m = HEADER.match(lines[i])
         if not m or i + int(m.group(5)) >= len(lines):
             return None
@@ -71,9 +91,15 @@ def parsed(stdout):
     return found
 
 
-def headers(stdout):
-    found = parsed(stdout)
+def headers(stdout, more=None):
+    found = parsed(stdout, more)
     return None if found is None else [ref for ref, _ in found]
+
+
+def scoped_probe(code, out, err, scope, want):
+    kept = [m for m in map(IN_KEPT.match, err.splitlines()) if m]
+    found = headers(out, more_line(4000, ["user", "assistant"], scope)) if code == 0 else None
+    return code == 0 and len(kept) == 1 and int(kept[0].group(1).replace(",", "")) == want and bool(found)
 
 
 def main(binary=BILBO, store=STORE):
@@ -115,7 +141,7 @@ def main(binary=BILBO, store=STORE):
     for name in sorted(manifest["stores"]):
         code, out, err = run(name, "recall", "--budget", "4000", "--", "user", "assistant", binary=binary, store=store)
         count = [m for m in map(SEARCHED.match, err.splitlines()) if m]
-        found = headers(out) if code == 0 else None
+        found = headers(out, more_line(4000, ["user", "assistant"])) if code == 0 else None
         other = [line for line in err.splitlines() if not (SEARCHED.match(line) or PASSED_OVER.match(line) or TYPOS.match(line))]
         ok = (code == 0 and not other and len(count) == 1
               and int(count[0].group(1).replace(",", "")) == manifest["stores"][name]["indexed"] and bool(found))
@@ -135,20 +161,20 @@ def main(binary=BILBO, store=STORE):
         want = sum(r["repo"] == repo for r in by_store[name]) + derived.get(repo, {}).get("note_entries", 0)
         code, out, err = run(name, "recall", "--in", f"{manifest.get('remembered', '')}/{repo}", "--budget", "4000", "--", "user", "assistant",
                              binary=binary, store=store)
-        scoped = [m for m in map(IN_KEPT.match, err.splitlines()) if m]
-        if "remembered" not in manifest or code != 0 or len(scoped) != 1 or int(scoped[0].group(1).replace(",", "")) != want:
+        scope = f"{manifest.get('remembered', '')}/{repo}"
+        if "remembered" not in manifest or not scoped_probe(code, out, err, scope, want):
             bad(f"{name}: recall --in {repo} exited {code}; stderr {err.strip()[:300]!r}; the repository has {want} entries")
         code, out, err = run(name, "recall", "--", "the", "and", "of", "to", binary=binary, store=store)
         if code != 1 or out or not err.splitlines() or err.splitlines()[-1] != "bilbo: nothing matched":
             bad(f"{name}: a query of stopwords exited {code}; stderr {err.strip()[:300]!r}")
         if has_notes(manifest, name):
             code, out, err = run(name, "recall", "--kind", "note", "--budget", "4000", "--", "user", "assistant", binary=binary, store=store)
-            notes = parsed(out) if code == 0 else None
+            notes = parsed(out, more_line(4000, ["user", "assistant"], kind="note")) if code == 0 else None
             if code != 0 or not notes or any(kind != "note" for _, kind in notes):
                 bad(f"{name}: recall --kind note exited {code}; stderr {err.strip()[:300]!r}; hits {notes}")
             code, out, err = run(name, "recall", "--budget", "4000", "--", "user", "assistant", binary=binary, store=store,
                                  env={"BILBO_RECALL_NOTES_BUDGET": "0"})
-            shown = parsed(out) if code == 0 else None
+            shown = parsed(out, more_line(4000, ["user", "assistant"])) if code == 0 else None
             if code != 0 or not shown or any(kind == "note" for _, kind in shown):
                 bad(f"{name}: recall with BILBO_RECALL_NOTES_BUDGET=0 exited {code} or printed a note: {shown}")
         kept = manifest["stores"][name]
@@ -164,7 +190,48 @@ HEADER_REFUSED = ["note\tcut\tpart 1/2\tcut", "part 1/2\tpart 2/2", "cut\tcut", 
                   "part 1/2\tnote", "cut\tnote", "Note", "note\t", "note\tcut\tpart 1/2"]
 
 
+def trailer_lines():
+    ref = "2T6W9YB0DE#r1"
+    hit = f"=== {ref}\t1 line\nbody\n"
+    plain = more_line(4000, ["user", "assistant"], "/r/a", "note")
+    escaped = more_line(4000, ["carrot\nrows"])
+    if plain != "more: bilbo recall --page 2 --in=/r/a --kind note --budget 4000 -- 'user assistant'" or escaped != "more: the same command with --page 2":
+        print(f"lines: the trailers read {plain!r} and {escaped!r}")
+        return 1
+    if more_line(4000, ["=ls"]) != "more: bilbo recall --page 2 --budget 4000 -- '=ls'":
+        print(f"lines: a query that starts with = reads {more_line(4000, ['=ls'])!r}")
+        return 1
+    if headers(f"{hit}{plain}\n", plain) != [ref] or headers(f"{hit}{escaped}\n", escaped) != [ref]:
+        print("lines: a trailer for the arguments was refused")
+        return 1
+    if headers(f"=== {ref}\t2 lines\nbody\n{plain}\n", plain) != [ref]:
+        print("lines: a hit whose last counted line is a trailer's text was refused")
+        return 1
+    for why, out in (("another query", f"{hit}{more_line(4000, ['other'], '/r/a', 'note')}\n"),
+                     ("another page", f"{hit}{plain.replace('--page 2', '--page 3')}\n"),
+                     ("one byte more", f"{hit}{plain} \n"), ("no hit before it", f"{plain}\n"),
+                     ("two trailers", f"{hit}{plain}\n{plain}\n"), ("a line after it", f"{hit}{plain}\nmore\n")):
+        if headers(out, plain) is not None:
+            print(f"lines: a trailer was accepted with {why}")
+            return 1
+    if headers(f"{hit}{plain}\n") is not None:
+        print("lines: a trailer was accepted where none is expected")
+        return 1
+    own = more_line(4000, ["user", "assistant"], "/r/a")
+    kept = "bilbo: --in kept 3 entries\n"
+    for why, out, taken in (("a hit and its own trailer", f"{hit}{own}\n", True),
+                            ("a trailer for another query", f"{hit}{more_line(4000, ['other'], '/r/a')}\n", False),
+                            ("the trailer without its --in", f"{hit}{more_line(4000, ['user', 'assistant'])}\n", False),
+                            ("no hit", "", False)):
+        if scoped_probe(0, out, kept, "/r/a", 3) != taken:
+            print(f"lines: the scoped probe's judgement of {why} is not {taken}")
+            return 1
+    return 0
+
+
 def lines():
+    if trailer_lines():
+        return 1
     ref = "2T6W9YB0DE#r1"
     for fields in HEADER_TAKEN:
         if headers(f"=== {ref}\t1 line{chr(9) + fields if fields else ''}\nbody\n") != [ref]:

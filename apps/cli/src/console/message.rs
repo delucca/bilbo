@@ -156,6 +156,20 @@ pub fn new_tags(tags: &[Tag]) -> Vec<Message> {
 }
 
 #[must_use]
+pub fn shell_word(text: &str) -> String {
+    let plain = !text.is_empty()
+        && !text.starts_with('=')
+        && text
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"/._-+:@%,=".contains(&byte));
+    if plain {
+        text.to_owned()
+    } else {
+        format!("'{}'", text.replace('\'', "'\\''"))
+    }
+}
+
+#[must_use]
 pub fn renders_as_written(text: &str) -> bool {
     text.chars().all(|c| !c.is_control() && !reorders(c))
 }
@@ -573,6 +587,22 @@ mod tests {
             (Stand::Unknown, Cache::Own(path())),
         ] {
             assert_eq!(unsearched(stand, &cache), None);
+        }
+    }
+
+    #[test]
+    fn a_word_is_written_for_a_shell() {
+        use super::shell_word;
+        for (text, word) in [
+            ("/home/me/src/shed", "/home/me/src/shed"),
+            ("a.b-c_d+e:f@g%h,i=j", "a.b-c_d+e:f@g%h,i=j"),
+            ("", "''"),
+            ("=ls", "'=ls'"),
+            ("two words", "'two words'"),
+            ("it's", "'it'\\''s'"),
+            ("$HOME", "'$HOME'"),
+        ] {
+            assert_eq!(shell_word(text), word, "{text:?}");
         }
     }
 }

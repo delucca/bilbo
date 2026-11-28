@@ -247,11 +247,28 @@ fn capture_of(sandbox: &Sandbox, hit: &Hit) -> String {
 }
 
 fn hits(stdout: &str) -> Vec<Hit> {
+    let (found, trailer) = hits_and_trailer(stdout);
+    assert_eq!(trailer, None, "a line after the last hit");
+    found
+}
+
+fn hits_trailed(stdout: &str, trailer: &str) -> Vec<Hit> {
+    let (found, held) = hits_and_trailer(stdout);
+    assert_eq!(held.as_deref(), Some(trailer));
+    found
+}
+
+fn hits_and_trailer(stdout: &str) -> (Vec<Hit>, Option<String>) {
     let mut lines = stdout.split('\n').collect::<Vec<_>>();
     assert_eq!(lines.pop(), Some(""), "output ends with a line feed");
     let mut found = Vec::new();
     let mut at = 0;
+    let mut more = None;
     while at < lines.len() {
+        if !found.is_empty() && at + 1 == lines.len() && !lines[at].starts_with("=== ") {
+            more = Some(lines[at].to_owned());
+            break;
+        }
         let fields: Vec<&str> = lines[at]
             .strip_prefix("=== ")
             .unwrap_or_else(|| panic!("a header at {:?}", lines[at]))
@@ -278,7 +295,7 @@ fn hits(stdout: &str) -> Vec<Hit> {
         });
         at += 1 + count;
     }
-    found
+    (found, more)
 }
 
 #[test]
@@ -372,7 +389,7 @@ fn recall_writes_no_file_but_the_query_log() {
         .lines()
         .map(|line| {
             let fields: Vec<&str> = line.split('\t').collect();
-            assert_eq!((fields[0], fields.len()), ("q3", 10), "{log}");
+            assert_eq!((fields[0], fields.len()), ("q4", 11), "{log}");
             fields[2]
         })
         .collect();
@@ -432,8 +449,8 @@ fn a_misspelt_query_finds_its_note_and_says_so() {
         .lines()
         .map(|line| {
             let fields: Vec<&str> = line.split('\t').collect();
-            assert_eq!((fields[0], fields.len()), ("q3", 10), "{log}");
-            (fields[8].to_owned(), fields[9].to_owned())
+            assert_eq!((fields[0], fields.len()), ("q4", 11), "{log}");
+            (fields[9].to_owned(), fields[10].to_owned())
         })
         .collect();
     assert_eq!(
@@ -989,7 +1006,7 @@ fn recall_with_a_scope_writes_no_file_but_the_query_log() {
             .iter()
             .map(|line| (line[0], line[5]))
             .collect::<Vec<_>>(),
-        [("q3", "notes"), ("q3", "claude"), ("q3", "nowhere")]
+        [("q4", "notes"), ("q4", "claude"), ("q4", "nowhere")]
     );
     assert_eq!(fields[2][6], "0", "a value that named nothing: {log}");
 }
@@ -1407,6 +1424,7 @@ fn run_with_settings(
         scope: Vec::new(),
         kind: Vec::new(),
         budget: None,
+        page: None,
     };
     bilbo_cli::recall::run(
         &bilbo_cli::bilbo(),
@@ -1650,7 +1668,13 @@ fn a_lower_budget_cuts_a_hit_and_prints_less() {
         &[("BILBO_RECALL_NOTES_BUDGET", "0")],
     );
     assert_eq!((full.code, small.code), (0, 0), "{:?}", small.stderr);
-    let (full_hits, small_hits) = (hits(&full.stdout), hits(&small.stdout));
+    let (full_hits, small_hits) = (
+        hits(&full.stdout),
+        hits_trailed(
+            &small.stdout,
+            "more: bilbo recall --page 2 --budget 256 -- turnips",
+        ),
+    );
     let cut = small_hits.last().expect("a hit");
     assert_eq!(cut.extras.last().map(String::as_str), Some("cut"));
     let same = full_hits
@@ -1662,7 +1686,8 @@ fn a_lower_budget_cuts_a_hit_and_prints_less() {
 }
 
 fn cost(stdout: &str) -> usize {
-    hits(stdout)
+    hits_and_trailer(stdout)
+        .0
         .iter()
         .map(|hit| Shared.count(&hit.printed))
         .sum()
@@ -2175,16 +2200,13 @@ fn is_note(hit: &Hit) -> bool {
 }
 
 fn notes_part(stdout: &str) -> (String, String) {
-    let at = stdout
-        .lines()
-        .scan(0, |offset, line| {
-            let start = *offset;
-            *offset += line.len() + 1;
-            Some((start, line))
-        })
-        .find(|(_, line)| line.starts_with("=== ") && line.ends_with("\tnote"))
-        .map_or(stdout.len(), |(start, _)| start);
-    (stdout[..at].to_owned(), stdout[at..].to_owned())
+    let (found, _) = hits_and_trailer(stdout);
+    let at = found
+        .iter()
+        .position(|hit| hit.extras.first().is_some_and(|kind| kind == "note"))
+        .unwrap_or(found.len());
+    let printed = |hits: &[Hit]| hits.iter().map(|hit| hit.printed.as_str()).collect();
+    (printed(&found[..at]), printed(&found[at..]))
 }
 
 fn note_text(noted: &Noted, number: u64, sources: &str) -> String {
@@ -2756,4 +2778,326 @@ fn a_tag_no_entry_carries_is_said_and_nothing_is_searched() {
         run.stderr.get(said + 1).map(String::as_str),
         Some("bilbo: nothing matched")
     );
+}
+
+const PAGE_ONE: &str = "\
+=== AS2KVMSCAF#r5-37\t16 lines\tpart 1/3\tcut\n\
+# Turnips\n\
+\n\
+turnips row 1 of the north bed is thinned and weeded.\n\
+turnips row 2 of the north bed is thinned and weeded.\n\
+turnips row 3 of the north bed is thinned and weeded.\n\
+turnips row 4 of the north bed is thinned and weeded.\n\
+turnips row 5 of the north bed is thinned and weeded.\n\
+turnips row 6 of the north bed is thinned and weeded.\n\
+turnips row 7 of the north bed is thinned and weeded.\n\
+turnips row 8 of the north bed is thinned and weeded.\n\
+turnips row 9 of the north bed is thinned and weeded.\n\
+turnips row 10 of the north bed is thinned and weeded.\n\
+turnips row 11 of the north bed is thinned and weeded.\n\
+turnips row 12 of the north bed is thinned and weeded.\n\
+turnips row 13 of the north bed is thinned and weeded.\n\
+turnips row 14 of the north bed is thinned and\n\
+";
+
+const SMALL_PAGE: [(&str, &str); 1] = [("BILBO_RECALL_NOTES_BUDGET", "0")];
+
+fn paged(sandbox: &Sandbox, word: &str) -> Vec<Run> {
+    let mut args: Vec<String> = ["recall", "--budget", "256", "--", word]
+        .iter()
+        .map(|arg| (*arg).to_owned())
+        .collect();
+    let mut runs = Vec::new();
+    loop {
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let run = sandbox.run_with(&refs, &SMALL_PAGE);
+        assert!(runs.len() < 40, "the pages never end");
+        let (_, more) = hits_and_trailer(&run.stdout);
+        runs.push(run);
+        let Some(more) = more else { break };
+        let line = more.strip_prefix("more: bilbo ").expect("a command");
+        args = line.split(' ').map(str::to_owned).collect();
+    }
+    runs
+}
+
+#[test]
+fn the_last_line_of_a_page_that_goes_on_is_more() {
+    let sandbox = Sandbox::new("recall_more_line");
+    sandbox.write("notes/long.md", long_note("turnips").as_bytes());
+    sandbox.remember(&["notes"]);
+    let first = sandbox.run_with(&["recall", "--budget", "256", "turnips"], &SMALL_PAGE);
+    assert_eq!(first.code, 0, "{:?}", first.stderr);
+    let (found, more) = hits_and_trailer(&first.stdout);
+    assert!(!found.is_empty());
+    assert_eq!(
+        more.as_deref(),
+        Some("more: bilbo recall --page 2 --budget 256 -- turnips")
+    );
+    assert!(first.stdout.ends_with("-- turnips\n"));
+    let second = sandbox.run_with(
+        &["recall", "--page", "2", "--budget", "256", "--", "turnips"],
+        &SMALL_PAGE,
+    );
+    assert_eq!(second.code, 0, "{:?}", second.stderr);
+    let seen: BTreeSet<String> = found.iter().map(|hit| hit.reference.clone()).collect();
+    assert!(
+        hits_trailed(
+            &second.stdout,
+            "more: bilbo recall --page 3 --budget 256 -- turnips"
+        )
+        .iter()
+        .all(|hit| !seen.contains(&hit.reference))
+    );
+
+    let mut every = Vec::new();
+    for run in paged(&sandbox, "turnips") {
+        every.extend(
+            hits_and_trailer(&run.stdout)
+                .0
+                .into_iter()
+                .map(|hit| hit.reference),
+        );
+    }
+    let whole = sandbox.run_with(&["recall", "--budget", "1000000", "turnips"], &SMALL_PAGE);
+    assert!(hits_and_trailer(&whole.stdout).1.is_none());
+    let expected: Vec<String> = hits(&whole.stdout)
+        .into_iter()
+        .map(|hit| hit.reference)
+        .collect();
+    assert_eq!(every.len(), expected.len(), "{every:?} {expected:?}");
+    let mut sorted = every.clone();
+    sorted.sort();
+    sorted.dedup();
+    assert_eq!(sorted.len(), every.len(), "a hit came twice");
+    assert_eq!(
+        every.iter().collect::<BTreeSet<_>>(),
+        expected.iter().collect::<BTreeSet<_>>()
+    );
+
+    let fixed = Sandbox::new("recall_page_one");
+    let mut note = String::from("---\nid: 01M6ZGE4KTBYYH07AS2KVMSCAF\n---\n\n# Turnips\n\n");
+    for row in 1..=60 {
+        note.push_str(&format!(
+            "turnips row {row} of the north bed is thinned and weeded.\n"
+        ));
+    }
+    fixed.write("notes/page-one.md", note.as_bytes());
+    fixed.remember(&["notes"]);
+    let page = fixed.run_with(&["recall", "--budget", "256", "turnips"], &SMALL_PAGE);
+    assert_eq!(page.code, 0, "{:?}", page.stderr);
+    assert_eq!(
+        page.stdout,
+        format!("{PAGE_ONE}more: bilbo recall --page 2 --budget 256 -- turnips\n")
+    );
+}
+
+#[test]
+fn a_hit_whose_last_line_looks_like_more_is_a_hit() {
+    const LOOK_ALIKE: &str = "more: bilbo recall --page 2 -- sorrel";
+    let sandbox = Sandbox::new("recall_more_look_alike");
+    sandbox.write(
+        "notes/trap.md",
+        format!("# Trap\n\nsorrel grows by the wall\n{LOOK_ALIKE}").as_bytes(),
+    );
+    sandbox.remember(&["notes"]);
+    let run = sandbox.run(&["recall", "sorrel"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let (found, trailer) = hits_and_trailer(&run.stdout);
+    assert_eq!(found.len(), 1, "{}", run.stdout);
+    assert_eq!(trailer, None, "{}", run.stdout);
+    assert_eq!(found[0].content.lines().last(), Some(LOOK_ALIKE));
+    assert!(run.stdout.ends_with(&format!("{LOOK_ALIKE}\n")));
+    assert!(!run.stdout.ends_with("\n\n"));
+}
+
+#[test]
+fn a_page_that_ends_the_lists_prints_no_more_line() {
+    let sandbox = Sandbox::new("recall_last_page");
+    sandbox.write("notes/long.md", long_note("turnips").as_bytes());
+    sandbox.remember(&["notes"]);
+    let runs = paged(&sandbox, "turnips");
+    assert!(runs.len() > 1);
+    let last = runs.last().expect("a page");
+    assert_eq!(last.code, 0, "{:?}", last.stderr);
+    assert!(!last.stdout.contains("\nmore: "));
+    assert!(hits_and_trailer(&last.stdout).1.is_none());
+    assert!(last.stdout.starts_with("=== "));
+}
+
+#[test]
+fn a_page_past_the_end_exits_1_and_says_which_page_ended_the_list() {
+    let sandbox = Sandbox::new("recall_past_the_end");
+    sandbox.write("notes/long.md", long_note("turnips").as_bytes());
+    sandbox.remember(&["notes"]);
+    let pages = paged(&sandbox, "turnips").len();
+    let past = (pages + 1).to_string();
+    let run = sandbox.run_with(
+        &[
+            "recall", "--page", &past, "--budget", "256", "--", "turnips",
+        ],
+        &SMALL_PAGE,
+    );
+    assert_eq!(run.code, 1, "{:?}", run.stderr);
+    assert_eq!(run.stdout, "");
+    assert_eq!(
+        run.stderr.last().map(String::as_str),
+        Some(format!("bilbo: nothing on page {past}: the list ended on page {pages}").as_str())
+    );
+    let none = sandbox.run(&["recall", "--page", "2", "zzzqqq"]);
+    assert_eq!(none.code, 1);
+    assert_eq!(
+        none.stderr.last().map(String::as_str),
+        Some("bilbo: nothing matched")
+    );
+}
+
+#[test]
+fn the_log_says_which_page_a_run_printed() {
+    let sandbox = Sandbox::new("recall_log_page");
+    sandbox.write("notes/long.md", long_note("turnips").as_bytes());
+    sandbox.remember(&["notes"]);
+    let pages = paged(&sandbox, "turnips").len();
+    let past = (pages + 1).to_string();
+    let run = |page: &str| {
+        sandbox.run_with(
+            &["recall", "--page", page, "--budget", "256", "--", "turnips"],
+            &SMALL_PAGE,
+        )
+    };
+    let (first, second, beyond) = (run("1"), run("2"), run(&past));
+    assert_eq!((first.code, second.code, beyond.code), (0, 0, 1));
+    let log = fs::read_to_string(sandbox.log()).expect("the query log");
+    let fields: Vec<Vec<&str>> = log.lines().map(|line| line.split('\t').collect()).collect();
+    let mine = &fields[fields.len() - 3..];
+    assert_eq!(
+        mine.iter()
+            .map(|line| (line[0], line[2], line[7]))
+            .collect::<Vec<_>>(),
+        [
+            ("q4", "hits", "1"),
+            ("q4", "hits", "2"),
+            ("q4", "nothing", past.as_str())
+        ]
+    );
+    for (line, run) in mine.iter().zip([&first, &second]) {
+        let shown: Vec<String> = hits_and_trailer(&run.stdout)
+            .0
+            .iter()
+            .map(|hit| hit.reference.clone())
+            .collect();
+        assert_eq!(line[8].split(',').count(), shown.len(), "{log}");
+        for reference in &shown {
+            let locator = &reference[reference.find('#').expect("a ref")..];
+            assert!(line[8].contains(locator), "{reference} in {}", line[8]);
+        }
+    }
+    assert_ne!(mine[0][8], mine[1][8]);
+    assert_eq!(mine[2][8], "-");
+}
+
+#[test]
+fn a_query_that_starts_with_an_equals_sign_is_quoted_in_the_more_line() {
+    let sandbox = Sandbox::new("recall_more_equals");
+    sandbox.write("notes/long.md", long_note("ls").as_bytes());
+    sandbox.remember(&["notes"]);
+    let run = sandbox.run_with(&["recall", "--budget", "256", "--", "=ls"], &SMALL_PAGE);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let found = hits_trailed(
+        &run.stdout,
+        "more: bilbo recall --page 2 --budget 256 -- '=ls'",
+    );
+    assert!(!found.is_empty());
+}
+
+#[test]
+fn a_budget_from_the_settings_is_not_carried_in_the_more_line() {
+    let sandbox = Sandbox::new("recall_more_settings_budget");
+    sandbox.write("notes/long.md", long_note("turnips").as_bytes());
+    sandbox.remember(&["notes"]);
+    let run = sandbox.run_with(
+        &["recall", "turnips"],
+        &[
+            ("BILBO_RECALL_BUDGET", "256"),
+            ("BILBO_RECALL_NOTES_BUDGET", "0"),
+        ],
+    );
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let found = hits_trailed(&run.stdout, "more: bilbo recall --page 2 -- turnips");
+    assert!(!found.is_empty());
+    assert_eq!(
+        run.stdout.lines().last(),
+        Some("more: bilbo recall --page 2 -- turnips")
+    );
+}
+
+#[test]
+fn a_page_the_command_line_refuses_gets_r_m1s_line() {
+    let sandbox = Sandbox::new("recall_page_refused");
+    sandbox.write("notes/short.md", b"# Short\n\nsorrel grows by the wall\n");
+    sandbox.remember(&["notes"]);
+    let bound = "18446744073709551615";
+    let cases: [(&[&str], &str); 6] = [
+        (&["--page", "-1"], "-1"),
+        (&["--page=-1"], "-1"),
+        (&["--page", "0"], "0"),
+        (&["--page", "two"], "two"),
+        (&["--page", "a\"b"], "a\"b"),
+        (&["--page", "18446744073709551616"], "18446744073709551616"),
+    ];
+    for (flags, value) in cases {
+        let mut args = vec!["recall"];
+        args.extend(flags);
+        args.extend(["--", "sorrel"]);
+        let run = sandbox.run(&args);
+        assert_eq!((run.code, run.stdout.as_str()), (2, ""), "{flags:?}");
+        assert_eq!(
+            run.stderr[0],
+            format!("bilbo: --page must be a whole number from 1 to {bound}, got {value:?}"),
+            "{flags:?}: {:?}",
+            run.stderr
+        );
+        assert!(
+            run.stderr[1].starts_with("bilbo: usage: bilbo recall"),
+            "{:?}",
+            run.stderr
+        );
+    }
+    let last = sandbox.run(&["recall", "--page", bound, "--", "sorrel"]);
+    assert_eq!(
+        (last.code, last.stdout.as_str()),
+        (1, ""),
+        "{:?}",
+        last.stderr
+    );
+    assert_eq!(
+        last.stderr.last().map(String::as_str),
+        Some(format!("bilbo: nothing on page {bound}: the list ended on page 1").as_str())
+    );
+}
+
+#[test]
+fn the_suites_reader_takes_only_the_trailer_a_run_expects() {
+    let hit = |kind: &str, last: &str| format!("=== 2T6W9YB0DE#r1\t2 lines{kind}\nfirst\n{last}\n");
+    let note = hit("\tnote", "more: bilbo recall --page 2 -- x");
+    let (found, trailer) = hits_and_trailer(&note);
+    assert_eq!((found.len(), trailer), (1, None));
+    assert_eq!(found[0].printed, note);
+    assert_eq!(
+        found[0].content.lines().last(),
+        Some("more: bilbo recall --page 2 -- x")
+    );
+    let (chunks, notes) = notes_part(&format!("{}{note}", hit("", "plain")));
+    assert_eq!(chunks, hit("", "plain"));
+    assert_eq!(notes, note);
+
+    let garbage = format!("{}more: garbage\n", hit("", "plain"));
+    let (found, trailer) = hits_and_trailer(&garbage);
+    assert_eq!(
+        (found.len(), trailer.as_deref()),
+        (1, Some("more: garbage"))
+    );
+    assert_eq!(found[0].printed, hit("", "plain"));
+    assert!(std::panic::catch_unwind(|| hits(&garbage)).is_err());
+    assert_eq!(hits_trailed(&garbage, "more: garbage").len(), 1);
 }

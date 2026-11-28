@@ -2,35 +2,93 @@ use bilbo_entries::tokens::Tokens;
 
 use super::hit::Hit;
 
+#[derive(Debug, Default)]
+pub struct Place {
+    held: Option<Hit>,
+    ended: bool,
+}
+
+impl Place {
+    pub fn closed() -> Place {
+        Place {
+            held: None,
+            ended: true,
+        }
+    }
+
+    pub fn ended(&self) -> bool {
+        self.ended
+    }
+
+    pub fn holds(&self) -> bool {
+        self.held.is_some()
+    }
+
+    pub fn take_held(&mut self) -> Option<Hit> {
+        self.held.take()
+    }
+
+    pub fn hold(&mut self, hit: Hit) {
+        self.held = Some(hit);
+    }
+
+    pub fn pack<E>(
+        &mut self,
+        hits: impl Iterator<Item = Result<Hit, E>>,
+        tokens: &dyn Tokens,
+        shown: &dyn Fn(&Hit) -> String,
+        keep: &mut dyn FnMut(&Hit) -> bool,
+        budget: usize,
+    ) -> Result<Vec<Hit>, E> {
+        let mut packed = Vec::new();
+        if self.ended {
+            return Ok(packed);
+        }
+        let mut hits = self.held.take().into_iter().map(Ok).chain(hits);
+        let mut left = budget;
+        while left > 0 {
+            let Some(next) = hits.next() else {
+                self.ended = true;
+                break;
+            };
+            let mut hit = next?;
+            let cost = tokens.count(&shown(&hit));
+            if cost <= left {
+                if keep(&hit) {
+                    left -= cost;
+                    packed.push(hit);
+                }
+                continue;
+            }
+            let whole = hit.clone();
+            if !cut(&mut hit, tokens, shown, left) {
+                if left == budget {
+                    self.ended = true;
+                } else {
+                    self.held = Some(whole);
+                }
+                break;
+            }
+            if keep(&hit) {
+                packed.push(hit);
+                break;
+            }
+        }
+        if packed.is_empty() {
+            self.ended = true;
+        }
+        Ok(packed)
+    }
+}
+
 pub fn pack<E>(
-    mut hits: impl Iterator<Item = Result<Hit, E>>,
+    hits: impl Iterator<Item = Result<Hit, E>>,
     tokens: &dyn Tokens,
     shown: &dyn Fn(&Hit) -> String,
     keep: &mut dyn FnMut(&Hit) -> bool,
     budget: usize,
 ) -> Result<Vec<Hit>, E> {
-    let mut packed = Vec::new();
-    let mut left = budget;
-    while left > 0 {
-        let Some(next) = hits.next() else { break };
-        let mut hit = next?;
-        let cost = tokens.count(&shown(&hit));
-        if cost <= left {
-            if keep(&hit) {
-                left -= cost;
-                packed.push(hit);
-            }
-            continue;
-        }
-        if !cut(&mut hit, tokens, shown, left) {
-            break;
-        }
-        if keep(&hit) {
-            packed.push(hit);
-            break;
-        }
-    }
-    Ok(packed)
+    Place::default().pack(hits, tokens, shown, keep, budget)
 }
 
 fn cut(hit: &mut Hit, tokens: &dyn Tokens, shown: &dyn Fn(&Hit) -> String, left: usize) -> bool {
@@ -61,7 +119,7 @@ mod tests {
     use bilbo_store::entries::{Generation, RecordRange};
     use bilbo_store::id::Id;
 
-    use super::{Hit, pack};
+    use super::{Hit, Place, pack};
     use crate::index::Extent;
     use crate::lookup::Found;
 
@@ -311,5 +369,59 @@ mod tests {
         }
         let hits = packed(&["ééééééé"], 9);
         assert_eq!(texts(&hits), ["éé"]);
+    }
+
+    #[test]
+    fn a_second_call_goes_on_after_the_first_calls_last_hit() {
+        let all = ["aaaa", "bbbb", "cccc", "dddd"];
+        let mut place = Place::default();
+        let mut rest = ok(&all);
+        let mut keep = |_: &Hit| true;
+        let Ok(first) = place.pack(rest.by_ref(), &Bytes, &shown, &mut keep, 14);
+        let Ok(second) = place.pack(rest.by_ref(), &Bytes, &shown, &mut keep, 14);
+        let together: Vec<&str> = texts(&first).into_iter().chain(texts(&second)).collect();
+        assert_eq!(together, texts(&packed(&all, 28)));
+        assert_eq!(together, all);
+        assert!(first.iter().chain(&second).all(|hit| !hit.cut));
+    }
+
+    #[test]
+    fn a_hit_with_no_room_stays_for_the_next_call_or_ends_its_list() {
+        let mut place = Place::default();
+        let mut rest = ok(&["aaaa", "bbbb", "cccc"]);
+        let mut keep = |_: &Hit| true;
+        let Ok(first) = place.pack(rest.by_ref(), &Bytes, &shown, &mut keep, 15);
+        assert_eq!(texts(&first), ["aaaa", "bbbb"]);
+        assert!(!place.ended());
+        assert!(place.holds());
+        let Ok(second) = place.pack(rest.by_ref(), &Bytes, &shown, &mut keep, 15);
+        assert_eq!(texts(&second), ["cccc"]);
+        assert!(!second[0].cut);
+
+        let pulled = Cell::new(0);
+        let all = ["bbbbbbbbbb", "c"];
+        let mut place = Place::default();
+        let mut rest = counted(&pulled, &all);
+        let Ok(none) = place.pack(rest.by_ref(), &Bytes, &shown, &mut keep, 4);
+        assert!(none.is_empty());
+        assert!(place.ended());
+        assert_eq!(pulled.get(), 1);
+        let Ok(later) = place.pack(rest.by_ref(), &Bytes, &shown, &mut keep, 30);
+        assert!(later.is_empty());
+        assert!(place.ended());
+        assert_eq!(pulled.get(), 1);
+    }
+
+    #[test]
+    fn a_cut_hit_is_not_offered_again() {
+        let mut place = Place::default();
+        let mut rest = ok(&["aaaa", "bbbbbbbbbb", "cccc"]);
+        let mut keep = |_: &Hit| true;
+        let Ok(first) = place.pack(rest.by_ref(), &Bytes, &shown, &mut keep, 15);
+        assert_eq!(texts(&first), ["aaaa", "bbbb"]);
+        assert!(first[1].cut);
+        assert!(!place.holds());
+        let Ok(second) = place.pack(rest.by_ref(), &Bytes, &shown, &mut keep, 15);
+        assert_eq!(texts(&second), ["cccc"]);
     }
 }

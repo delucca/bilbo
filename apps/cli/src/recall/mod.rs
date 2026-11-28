@@ -27,7 +27,7 @@ use crate::console::theme::Mark;
 const SUMMARY: &str = "Search everything bilbo keeps and print the best chunks and notes";
 const ABOUT: &str = "bilbo recall: search what bilbo keeps and print the best chunks and notes.";
 const USAGE: &str = "bilbo recall <query>... [--in <label>]... [--kind <kind>]...
-               [--budget <tokens>]";
+               [--budget <tokens>] [--page <n>]";
 const BUDGET_FLAG: &str = "--budget";
 
 #[derive(Debug, clap::Args)]
@@ -61,6 +61,14 @@ pub struct Args {
         help = "Cap chunks at this many tokens, more if no note matches"
     )]
     pub budget: Option<String>,
+    #[arg(
+        long,
+        allow_negative_numbers = true,
+        value_name = "n",
+        value_parser = NonEmptyStringValueParser::new(),
+        help = "Print that page; a more: line names the next"
+    )]
+    pub page: Option<String>,
 }
 
 const PAGE: &str = "\
@@ -70,9 +78,8 @@ Output:
   ... part <k>/<m>      one piece of a record too long for a chunk
   ... cut               the last hit of a list, cut to fit its room
   <ref>                 bilbo read takes it: the end of the id and the records
-  queries.log           in the state folder: each query that reaches the store
---in takes an id, whole or as a hit prints it, tag:<name>, or words of a label
-(bilbo read lists them). A value starting with - takes =: --in=-home-me-src-shed
+  more: <command>       the last line when a list goes on: prints the next page
+--in takes an id, tag:<name> or words of a label; a leading - takes =: --in=-x
 
 Exit:
   0  at least one hit
@@ -116,6 +123,13 @@ pub fn run(
         };
         return Err(usage(root, sanitize(&reason), Some("recall")));
     }
+    let page = match args.page.as_deref() {
+        None => 1,
+        Some(text) => match page_number(text) {
+            Ok(page) => page,
+            Err(reason) => return Err(usage(root, reason, Some("recall"))),
+        },
+    };
     let none = File::default();
     let source = Source {
         var: &*env.var,
@@ -167,6 +181,7 @@ pub fn run(
         scope: args.scope.clone(),
         budget: budget.value,
         apart_budget: settings.recall.notes_budget.value,
+        page,
         at: SystemTime::now(),
     };
     let access = match (&cache, index.as_deref()) {
@@ -190,7 +205,27 @@ pub fn run(
         &mut log::File::at(store.state()),
     );
     drop(store);
-    outcome(finished, &cache)
+    let asked = view::Asked {
+        page,
+        scope: args.scope.clone(),
+        kinds: args.kind.clone(),
+        budget: args.budget.clone(),
+        query: args.query.clone(),
+    };
+    outcome(finished, &cache, &asked)
+}
+
+fn page_number(text: &str) -> Result<u64, String> {
+    let number = (!text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit()))
+        .then(|| text.parse::<u64>().ok())
+        .flatten()
+        .filter(|page| *page >= 1);
+    number.ok_or_else(|| {
+        format!(
+            "--page must be a whole number from 1 to {}, got {text:?}",
+            u64::MAX
+        )
+    })
 }
 
 fn say(mark: Mark, text: String) -> Message {
@@ -267,7 +302,7 @@ fn kept(scope: &Scoped) -> Message {
     say(Mark::Info, text)
 }
 
-pub fn outcome(finished: Finished, cache: &Cache) -> Result<Outcome, Failure> {
+pub fn outcome(finished: Finished, cache: &Cache, asked: &view::Asked) -> Result<Outcome, Failure> {
     let Finished { result, unlogged } = finished;
     let unlogged =
         unlogged.map(|error| say(Mark::Warning, format!("the query was not logged: {error}")));
@@ -342,7 +377,16 @@ pub fn outcome(finished: Finished, cache: &Cache) -> Result<Outcome, Failure> {
     diagnostics.extend(passed_over(output.skipped));
     diagnostics.extend(unlogged);
     if ran && output.hits.is_empty() && output.apart.is_empty() {
-        diagnostics.push(say(Mark::Info, "nothing matched".to_owned()));
+        diagnostics.push(say(
+            Mark::Info,
+            match output.ended {
+                Some(last) => format!(
+                    "nothing on page {}: the list ended on page {last}",
+                    asked.page
+                ),
+                None => "nothing matched".to_owned(),
+            },
+        ));
     }
     diagnostics.extend(unsearched(output.stand, cache));
     let exit = if !ran {
@@ -352,9 +396,10 @@ pub fn outcome(finished: Finished, cache: &Cache) -> Result<Outcome, Failure> {
     } else {
         Exit::Success
     };
-    let plain = view::plain(&output);
+    let plain = view::plain(&output, asked);
+    let asked = asked.clone();
     Ok(Outcome::new(plain)
-        .with_human(move |view| view::human(&output, view))
+        .with_human(move |view| view::human(&output, view, &asked))
         .on_every_terminal()
         .with_diagnostics(diagnostics)
         .with_exit(exit))
@@ -375,7 +420,8 @@ mod tests {
     use bilbo_store::id::Id;
     use bilbo_store::segments::Cache;
 
-    use super::outcome;
+    use super::view::Asked;
+    use super::{outcome, page_number};
     use crate::console::outcome::Failure;
     use crate::console::view::View;
 
@@ -411,6 +457,8 @@ mod tests {
             scope: None,
             apart: Vec::new(),
             expanded: Vec::new(),
+            more: false,
+            ended: None,
         }
     }
 
@@ -451,7 +499,7 @@ mod tests {
     }
 
     fn lines(finished: Finished, cache: &Cache) -> (u8, Vec<String>) {
-        match outcome(finished, cache) {
+        match outcome(finished, cache, &Asked::default()) {
             Ok(outcome) => (outcome.exit_code(), outcome.stderr_lines(&View::PLAIN)),
             Err(failure) => (failure.exit_code(), failure.stderr_lines(&View::PLAIN)),
         }
@@ -462,6 +510,7 @@ mod tests {
         let done = outcome(
             finished(output(2, 1412, Stand::Current, 0), None),
             &Cache::Absent,
+            &Asked::default(),
         )
         .expect("an outcome");
         assert_eq!(done.exit_code(), 0);
@@ -833,6 +882,7 @@ mod tests {
                 Some("disk full"),
             ),
             &Cache::Absent,
+            &Asked::default(),
         )
         .expect("both lines make an outcome");
         assert_eq!(done.exit_code(), 2);
@@ -843,7 +893,47 @@ mod tests {
                 None,
             ),
             &Cache::Absent,
+            &Asked::default(),
         );
         assert!(matches!(alone, Err(Failure::Config(_))));
+    }
+
+    #[test]
+    fn page_takes_a_whole_number_of_one_or_more() {
+        for bad in [
+            "0",
+            "-1",
+            "two",
+            "1.5",
+            "+1",
+            "1e3",
+            "18446744073709551616",
+            "99999999999999999999",
+        ] {
+            assert_eq!(
+                page_number(bad),
+                Err(format!(
+                    "--page must be a whole number from 1 to 18446744073709551615, got \"{bad}\""
+                )),
+                "{bad}"
+            );
+        }
+        assert_eq!(
+            page_number("a\"b"),
+            Err(
+                "--page must be a whole number from 1 to 18446744073709551615, got \"a\\\"b\""
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            page_number("a\\b"),
+            Err(
+                "--page must be a whole number from 1 to 18446744073709551615, got \"a\\\\b\""
+                    .to_owned()
+            )
+        );
+        for good in [("1", 1), ("40", 40), ("18446744073709551615", u64::MAX)] {
+            assert_eq!(page_number(good.0), Ok(good.1));
+        }
     }
 }

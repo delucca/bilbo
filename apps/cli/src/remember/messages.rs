@@ -1,7 +1,7 @@
 use bilbo_entries::remember::{self, Output};
 use bilbo_store::labels::Tag;
 
-use crate::console::message::{Message, new_tags, renders_as_written};
+use crate::console::message::{Message, new_tags, renders_as_written, shell_word};
 
 pub fn refusals(outputs: &[Output]) -> Vec<Message> {
     outputs
@@ -50,18 +50,6 @@ pub fn withdrawals(outputs: &[Output]) -> Vec<Message> {
             )))
         })
         .collect()
-}
-
-fn shell_word(path: &str) -> String {
-    let plain = !path.is_empty()
-        && path
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"/._-+:@%,=".contains(&byte));
-    if plain {
-        path.to_owned()
-    } else {
-        format!("'{}'", path.replace('\'', "'\\''"))
-    }
 }
 
 pub fn passed(outputs: &[Output]) -> Vec<Message> {

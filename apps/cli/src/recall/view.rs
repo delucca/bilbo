@@ -3,7 +3,7 @@ use bilbo_search::recall::Output;
 use bilbo_search::recall::hit::Hit;
 
 use crate::console::body::body;
-use crate::console::message::entry_ref;
+use crate::console::message::{entry_ref, renders_as_written, shell_word};
 use crate::console::theme::{Style, paint};
 use crate::console::view::View;
 
@@ -67,17 +67,72 @@ pub fn hit(hit: &Hit) -> String {
     shown(hit, &View::PLAIN)
 }
 
-pub fn plain(output: &Output) -> String {
-    output.hits.iter().chain(&output.apart).map(hit).collect()
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Asked {
+    pub page: u64,
+    pub scope: Vec<String>,
+    pub kinds: Vec<String>,
+    pub budget: Option<String>,
+    pub query: Vec<String>,
 }
 
-pub fn human(output: &Output, view: &View) -> String {
-    output
+impl Default for Asked {
+    fn default() -> Asked {
+        Asked {
+            page: 1,
+            scope: Vec::new(),
+            kinds: Vec::new(),
+            budget: None,
+            query: Vec::new(),
+        }
+    }
+}
+
+fn command(asked: &Asked) -> Option<String> {
+    let query = asked.query.join(" ");
+    if !renders_as_written(&query) || !asked.scope.iter().all(|value| renders_as_written(value)) {
+        return None;
+    }
+    let mut command = format!("bilbo recall --page {}", asked.page + 1);
+    for value in &asked.scope {
+        command += &format!(" --in={}", shell_word(value));
+    }
+    for kind in &asked.kinds {
+        command += &format!(" --kind {}", shell_word(kind));
+    }
+    if let Some(budget) = &asked.budget {
+        command += &format!(" --budget {}", shell_word(budget));
+    }
+    Some(format!("{command} -- {}", shell_word(&query)))
+}
+
+fn more(asked: &Asked, view: &View) -> String {
+    let label = paint(view, Style::Note, "more:");
+    match command(asked) {
+        Some(command) => format!("{label} {}\n", paint(view, Style::Command, &command)),
+        None => format!("{label} the same command with --page {}\n", asked.page + 1),
+    }
+}
+
+pub fn plain(output: &Output, asked: &Asked) -> String {
+    let mut text: String = output.hits.iter().chain(&output.apart).map(hit).collect();
+    if output.more {
+        text += &more(asked, &View::PLAIN);
+    }
+    text
+}
+
+pub fn human(output: &Output, view: &View, asked: &Asked) -> String {
+    let mut text: String = output
         .hits
         .iter()
         .chain(&output.apart)
         .map(|hit| shown(hit, view))
-        .collect()
+        .collect();
+    if output.more {
+        text += &more(asked, view);
+    }
+    text
 }
 
 fn shown(hit: &Hit, view: &View) -> String {
@@ -97,7 +152,7 @@ mod tests {
     use bilbo_store::entries::{Generation, RecordRange};
     use bilbo_store::id::Id;
 
-    use super::{hit, human, plain};
+    use super::{Asked, hit, human, plain};
     use crate::console::view::View;
 
     const ID: &str = "01JC5Q3V7XKM4P8R2T6W9YB0DE";
@@ -143,6 +198,8 @@ mod tests {
             skipped: Skipped::default(),
             scope: None,
             expanded: Vec::new(),
+            more: false,
+            ended: None,
         }
     }
 
@@ -205,7 +262,10 @@ mod tests {
         let (first, rest) = two.split_at(two.find("\n=== ").expect("a second hit") + 1);
         assert_eq!(content(first).1, "a");
         assert_eq!(content(rest).1, "b");
-        assert_eq!(plain(&output(vec![one_line()])), hit(&one_line()));
+        assert_eq!(
+            plain(&output(vec![one_line()]), &Asked::default()),
+            hit(&one_line())
+        );
     }
 
     fn one_line() -> Hit {
@@ -253,6 +313,7 @@ mod tests {
                 ..output(Vec::new())
             },
             &View::HUMAN,
+            &Asked::default(),
         );
         assert_eq!(
             painted,
@@ -267,6 +328,7 @@ mod tests {
                 ..output(Vec::new())
             },
             &unpainted(),
+            &Asked::default(),
         );
         assert_eq!(unpainted, hit(&apart(None, false)));
     }
@@ -345,7 +407,7 @@ mod tests {
         );
         let out = output(vec![hostile]);
         for view in [View::HUMAN, unpainted()] {
-            let shown = human(&out, &view);
+            let shown = human(&out, &view, &Asked::default());
             assert!(!shown.contains('\u{1b}') || view.paint, "{shown:?}");
             let body: Vec<&str> = shown.lines().skip(1).collect();
             assert_eq!(
@@ -360,14 +422,17 @@ mod tests {
     fn off_a_terminal_the_text_is_as_kept() {
         let raw = made(1, 1, None, None, "a\u{1b}[31mred\rx", false);
         let out = output(vec![raw]);
-        assert!(plain(&out).contains("a\u{1b}[31mred\rx\n"));
-        assert_eq!(human(&out, &View::PLAIN), plain(&out));
+        assert!(plain(&out, &Asked::default()).contains("a\u{1b}[31mred\rx\n"));
+        assert_eq!(
+            human(&out, &View::PLAIN, &Asked::default()),
+            plain(&out, &Asked::default())
+        );
     }
 
     #[test]
     fn the_header_is_painted_only_for_a_person() {
         let out = output(vec![made(2, 1, Some((0, 2)), None, "text", true)]);
-        let painted = human(&out, &View::HUMAN);
+        let painted = human(&out, &View::HUMAN, &Asked::default());
         let header = painted.lines().next().expect("a header");
         assert_eq!(
             header,
@@ -376,7 +441,103 @@ mod tests {
                  \u{1b}[2mpart 1/2\u{1b}[22m\t\u{1b}[2mcut\u{1b}[22m"
             )
         );
-        assert_eq!(human(&out, &unpainted()), plain(&out));
+        assert_eq!(
+            human(&out, &unpainted(), &Asked::default()),
+            plain(&out, &Asked::default())
+        );
         assert_eq!(painted.lines().nth(1), Some("text"));
+    }
+
+    fn asked(
+        page: u64,
+        scope: &[&str],
+        kinds: &[&str],
+        budget: Option<&str>,
+        query: &[&str],
+    ) -> Asked {
+        let owned = |items: &[&str]| items.iter().map(|item| (*item).to_owned()).collect();
+        Asked {
+            page,
+            scope: owned(scope),
+            kinds: owned(kinds),
+            budget: budget.map(str::to_owned),
+            query: owned(query),
+        }
+    }
+
+    fn more_line(asked: &Asked) -> String {
+        let said = Output {
+            more: true,
+            ..output(Vec::new())
+        };
+        plain(&said, asked)
+    }
+
+    #[test]
+    fn the_more_line_is_the_next_pages_command_with_what_the_run_was_given() {
+        let table = [
+            (
+                asked(1, &[], &[], None, &["carrots"]),
+                "more: bilbo recall --page 2 -- carrots\n",
+            ),
+            (
+                asked(
+                    2,
+                    &["garden", "-x"],
+                    &["session", "note"],
+                    Some("1500"),
+                    &["thin", "the", "carrot", "rows"],
+                ),
+                "more: bilbo recall --page 3 --in=garden --in=-x --kind session --kind note --budget 1500 -- 'thin the carrot rows'\n",
+            ),
+            (
+                asked(1, &["tag:beds"], &[], None, &["carrots"]),
+                "more: bilbo recall --page 2 --in=tag:beds -- carrots\n",
+            ),
+        ];
+        for (given, line) in table {
+            assert_eq!(more_line(&given), line);
+        }
+        let painted = human(
+            &Output {
+                more: true,
+                ..output(Vec::new())
+            },
+            &View::HUMAN,
+            &asked(1, &[], &[], None, &["carrots"]),
+        );
+        assert_eq!(
+            painted,
+            "\u{1b}[2mmore:\u{1b}[22m \u{1b}[36mbilbo recall --page 2 -- carrots\u{1b}[39m\n"
+        );
+    }
+
+    #[test]
+    fn the_more_line_quotes_for_a_shell_and_gives_no_command_for_a_value_a_line_would_escape() {
+        assert_eq!(
+            more_line(&asked(
+                1,
+                &["/home/me/src/my shed"],
+                &[],
+                None,
+                &["what's", "left", "$HOME"]
+            )),
+            "more: bilbo recall --page 2 --in='/home/me/src/my shed' -- 'what'\\''s left $HOME'\n"
+        );
+        assert_eq!(
+            more_line(&asked(1, &[], &[], None, &["=ls"])),
+            "more: bilbo recall --page 2 -- '=ls'\n"
+        );
+        for (scope, query) in [
+            (&[][..], &["one\ntwo"][..]),
+            (&[][..], &["a\u{202e}b"][..]),
+            (&["x\ty"][..], &["q"][..]),
+            (&["x\u{2066}"][..], &["q"][..]),
+        ] {
+            assert_eq!(
+                more_line(&asked(4, scope, &[], Some("300"), query)),
+                "more: the same command with --page 5\n"
+            );
+        }
     }
 }

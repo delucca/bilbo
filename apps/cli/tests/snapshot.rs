@@ -5,6 +5,7 @@ use bilbo_cli::console::env::Env;
 use bilbo_cli::console::outcome::Failure;
 use bilbo_cli::console::settings::{self, Settings};
 use bilbo_cli::console::view::View;
+use bilbo_cli::recall::view::Asked;
 use bilbo_cli::remember::view;
 use bilbo_cli::{kinds, readers, run};
 use bilbo_entries::files::Memory;
@@ -798,18 +799,46 @@ fn recalled() -> bilbo_search::recall::Output {
         scope: None,
         apart: Vec::new(),
         expanded: Vec::new(),
+        more: false,
+        ended: None,
     }
 }
 
 #[test]
 fn the_recall_output_in_the_plain_view_and_on_a_terminal() {
     assert_eq!(
-        bilbo_cli::recall::view::plain(&recalled()),
+        bilbo_cli::recall::view::plain(&recalled(), &Asked::default()),
         include_str!("snapshots/recall-output.txt")
     );
     assert_eq!(
-        bilbo_cli::recall::view::human(&recalled(), &View::HUMAN),
+        bilbo_cli::recall::view::human(&recalled(), &View::HUMAN, &Asked::default()),
         include_str!("snapshots/recall-output.human.ansi")
+    );
+}
+
+#[test]
+fn the_more_line_in_both_views() {
+    let mut output = recalled();
+    output.more = true;
+    let asked = Asked {
+        page: 2,
+        scope: vec!["garden".to_owned(), "tag:beds".to_owned()],
+        kinds: vec!["session".to_owned()],
+        budget: Some("1500".to_owned()),
+        query: vec![
+            "thin".to_owned(),
+            "the".to_owned(),
+            "carrot".to_owned(),
+            "rows".to_owned(),
+        ],
+    };
+    assert_eq!(
+        bilbo_cli::recall::view::plain(&output, &asked),
+        include_str!("snapshots/recall-more.txt")
+    );
+    assert_eq!(
+        bilbo_cli::recall::view::human(&output, &View::HUMAN, &asked),
+        include_str!("snapshots/recall-more.human.ansi")
     );
 }
 
@@ -858,11 +887,11 @@ fn recalled_with_notes() -> bilbo_search::recall::Output {
 #[test]
 fn the_recall_output_with_notes_in_the_plain_view_and_on_a_terminal() {
     assert_eq!(
-        bilbo_cli::recall::view::plain(&recalled_with_notes()),
+        bilbo_cli::recall::view::plain(&recalled_with_notes(), &Asked::default()),
         include_str!("snapshots/recall-notes.txt")
     );
     assert_eq!(
-        bilbo_cli::recall::view::human(&recalled_with_notes(), &View::HUMAN),
+        bilbo_cli::recall::view::human(&recalled_with_notes(), &View::HUMAN, &Asked::default()),
         include_str!("snapshots/recall-notes.human.ansi")
     );
 }
@@ -903,13 +932,19 @@ fn recall_says_what_was_searched_and_that_nothing_matched_on_stderr() {
         scope: None,
         apart: Vec::new(),
         expanded: Vec::new(),
+        more: false,
+        ended: None,
     };
     let finished = bilbo_search::recall::Finished {
         result: Ok(nothing),
         unlogged: None,
     };
-    let outcome = bilbo_cli::recall::outcome(finished, &bilbo_store::segments::Cache::Absent)
-        .expect("an outcome");
+    let outcome = bilbo_cli::recall::outcome(
+        finished,
+        &bilbo_store::segments::Cache::Absent,
+        &Asked::default(),
+    )
+    .expect("an outcome");
     assert_eq!(outcome.exit_code(), 1);
     let mut text = outcome.stderr_lines(&View::PLAIN).join("\n");
     text.push('\n');
@@ -932,8 +967,12 @@ fn the_typos_line_in_the_plain_view() {
         result: Ok(output),
         unlogged: None,
     };
-    let outcome = bilbo_cli::recall::outcome(finished, &bilbo_store::segments::Cache::Absent)
-        .expect("an outcome");
+    let outcome = bilbo_cli::recall::outcome(
+        finished,
+        &bilbo_store::segments::Cache::Absent,
+        &Asked::default(),
+    )
+    .expect("an outcome");
     assert_eq!(outcome.exit_code(), 0);
     let mut text = outcome.stderr_lines(&View::PLAIN).join("\n");
     text.push('\n');
@@ -952,8 +991,12 @@ fn recall_says_what_it_passed_over_on_stderr() {
         result: Ok(output),
         unlogged: None,
     };
-    let outcome = bilbo_cli::recall::outcome(finished, &bilbo_store::segments::Cache::Absent)
-        .expect("an outcome");
+    let outcome = bilbo_cli::recall::outcome(
+        finished,
+        &bilbo_store::segments::Cache::Absent,
+        &Asked::default(),
+    )
+    .expect("an outcome");
     assert_eq!(outcome.exit_code(), 0);
     let mut text = outcome.stderr_lines(&View::PLAIN).join("\n");
     text.push('\n');
@@ -1004,8 +1047,12 @@ fn recall_says_what_a_scope_named_kept_and_left_out_on_stderr() {
         result: Ok(output),
         unlogged: None,
     };
-    let outcome = bilbo_cli::recall::outcome(finished, &bilbo_store::segments::Cache::Absent)
-        .expect("an outcome");
+    let outcome = bilbo_cli::recall::outcome(
+        finished,
+        &bilbo_store::segments::Cache::Absent,
+        &Asked::default(),
+    )
+    .expect("an outcome");
     assert_eq!(outcome.exit_code(), 0);
     let mut text = outcome.stderr_lines(&View::PLAIN).join("\n");
     text.push('\n');

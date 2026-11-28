@@ -6074,7 +6074,7 @@ fn four_queries(sandbox: &Sandbox, file: Id) -> Vec<(u8, String, Vec<String>, St
             .split('\t')
             .map(str::to_owned)
             .collect();
-        assert_eq!(fields[0], "q3", "{args:?}");
+        assert_eq!(fields[0], "q4", "{args:?}");
         fields[1] = "<time>".to_owned();
         found.push((run.code, run.stdout, run.stderr, fields.join("\t") + "\n"));
     }

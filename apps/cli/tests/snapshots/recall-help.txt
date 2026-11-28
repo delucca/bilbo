@@ -2,12 +2,13 @@ bilbo recall: search what bilbo keeps and print the best chunks and notes.
 
 Usage:
   bilbo recall <query>... [--in <label>]... [--kind <kind>]...
-               [--budget <tokens>]
+               [--budget <tokens>] [--page <n>]
 
 Options:
       --in <label>       Search what a label or an id names; repeat it for more
       --kind <kind>      Search entries of this kind only; repeat it for more
       --budget <tokens>  Cap chunks at this many tokens, more if no note matches
+      --page <n>         Print that page; a more: line names the next
 
 Output:
   === <ref> <n> lines   a hit's header (tab-separated), then <n> lines of text
@@ -15,9 +16,8 @@ Output:
   ... part <k>/<m>      one piece of a record too long for a chunk
   ... cut               the last hit of a list, cut to fit its room
   <ref>                 bilbo read takes it: the end of the id and the records
-  queries.log           in the state folder: each query that reaches the store
---in takes an id, whole or as a hit prints it, tag:<name>, or words of a label
-(bilbo read lists them). A value starting with - takes =: --in=-home-me-src-shed
+  more: <command>       the last line when a list goes on: prints the next page
+--in takes an id, tag:<name> or words of a label; a leading - takes =: --in=-x
 
 Exit:
   0  at least one hit

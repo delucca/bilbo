@@ -41,6 +41,7 @@ pub struct Record<'a> {
     pub kinds: &'a [String],
     pub scope: &'a [String],
     pub named: Option<u64>,
+    pub page: u64,
     pub hits: &'a [Hit],
     pub apart: &'a [Hit],
     pub expanded: &'a [Expanded],
@@ -92,7 +93,7 @@ pub fn line(record: &Record<'_>) -> String {
         .duration_since(UNIX_EPOCH)
         .map_or(0, |after| after.as_secs());
     format!(
-        "q3\t{seconds}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+        "q4\t{seconds}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
         record.ended.word(),
         record.searched,
         joined(record.kinds.iter().cloned()),
@@ -100,6 +101,7 @@ pub fn line(record: &Record<'_>) -> String {
         record
             .named
             .map_or_else(|| "-".to_owned(), |named| named.to_string()),
+        record.page,
         joined(record.hits.iter().chain(record.apart).map(shown)),
         joined(
             record
@@ -162,6 +164,7 @@ mod tests {
             kinds,
             scope: &[],
             named: None,
+            page: 1,
             hits,
             apart: &[],
             expanded: &[],
@@ -170,7 +173,7 @@ mod tests {
     }
 
     #[test]
-    fn a_line_has_its_ten_fields_in_order() {
+    fn a_line_has_its_eleven_fields_in_order() {
         let kinds = ["markdown".to_owned(), "session".to_owned()];
         let hits = [hit(FIRST, 3, 1, false), hit(SECOND, 2, 5, true)];
         for (ended, word) in [
@@ -184,13 +187,13 @@ mod tests {
             assert_eq!(
                 line(&record(ended, &kinds, &hits, "release checklist")),
                 format!(
-                    "q3\t1700000000\t{word}\t7\tmarkdown,session\t-\t-\t{FIRST}#r3,{SECOND}#r2-6!\t-\trelease checklist\n"
+                    "q4\t1700000000\t{word}\t7\tmarkdown,session\t-\t-\t1\t{FIRST}#r3,{SECOND}#r2-6!\t-\trelease checklist\n"
                 )
             );
         }
         assert_eq!(
             line(&record(Ended::Nothing, &[], &[], "x")),
-            "q3\t1700000000\tnothing\t7\t-\t-\t-\t-\t-\tx\n"
+            "q4\t1700000000\tnothing\t7\t-\t-\t-\t1\t-\t-\tx\n"
         );
         let scope = ["bilbo".to_owned(), "notes".to_owned()];
         let mut scoped = record(Ended::Hits, &kinds[..1], &hits[1..], "x");
@@ -198,20 +201,22 @@ mod tests {
         scoped.named = Some(12);
         assert_eq!(
             line(&scoped),
-            format!("q3\t1700000000\thits\t7\tmarkdown\tbilbo,notes\t12\t{SECOND}#r2-6!\t-\tx\n")
+            format!(
+                "q4\t1700000000\thits\t7\tmarkdown\tbilbo,notes\t12\t1\t{SECOND}#r2-6!\t-\tx\n"
+            )
         );
         let mut nothing = record(Ended::Nothing, &[], &[], "x");
         nothing.scope = &scope[..1];
         nothing.named = Some(0);
         assert_eq!(
             line(&nothing),
-            "q3\t1700000000\tnothing\t7\t-\tbilbo\t0\t-\t-\tx\n"
+            "q4\t1700000000\tnothing\t7\t-\tbilbo\t0\t1\t-\t-\tx\n"
         );
         let mut failed = record(Ended::Failed, &[], &[], "x");
         failed.scope = &scope[..1];
         assert_eq!(
             line(&failed),
-            "q3\t1700000000\tfailed\t7\t-\tbilbo\t-\t-\t-\tx\n"
+            "q4\t1700000000\tfailed\t7\t-\tbilbo\t-\t1\t-\t-\tx\n"
         );
         let carot = Expanded {
             term: "carot".to_owned(),
@@ -226,14 +231,14 @@ mod tests {
         typos.expanded = &one;
         assert_eq!(
             line(&typos),
-            format!("q3\t1700000000\thits\t7\t-\t-\t-\t{FIRST}#r3\tcarot>carrot\tcarot setin\n")
+            format!("q4\t1700000000\thits\t7\t-\t-\t-\t1\t{FIRST}#r3\tcarot>carrot\tcarot setin\n")
         );
         let two = [carot, setin];
         typos.expanded = &two;
         assert_eq!(
             line(&typos),
             format!(
-                "q3\t1700000000\thits\t7\t-\t-\t-\t{FIRST}#r3\tcarot>carrot,setin>set+setton\tcarot setin\n"
+                "q4\t1700000000\thits\t7\t-\t-\t-\t1\t{FIRST}#r3\tcarot>carrot,setin>set+setton\tcarot setin\n"
             )
         );
     }
@@ -246,17 +251,17 @@ mod tests {
         both.apart = &apart;
         assert_eq!(
             line(&both),
-            format!("q3\t1700000000\thits\t7\t-\t-\t-\t{FIRST}#r3,{SECOND}#r2-6!\t-\tx\n")
+            format!("q4\t1700000000\thits\t7\t-\t-\t-\t1\t{FIRST}#r3,{SECOND}#r2-6!\t-\tx\n")
         );
         let mut alone = record(Ended::Hits, &[], &[], "x");
         alone.apart = &apart;
         assert_eq!(
             line(&alone),
-            format!("q3\t1700000000\thits\t7\t-\t-\t-\t{SECOND}#r2-6!\t-\tx\n")
+            format!("q4\t1700000000\thits\t7\t-\t-\t-\t1\t{SECOND}#r2-6!\t-\tx\n")
         );
         assert_eq!(
             line(&record(Ended::Hits, &[], &main, "x")),
-            format!("q3\t1700000000\thits\t7\t-\t-\t-\t{FIRST}#r3\t-\tx\n")
+            format!("q4\t1700000000\thits\t7\t-\t-\t-\t1\t{FIRST}#r3\t-\tx\n")
         );
     }
 
@@ -276,10 +281,10 @@ mod tests {
             let text = line(&each);
             assert_eq!(
                 text,
-                format!("q3\t1700000000\thits\t7\t-\t{written},z\t1\t-\t-\tx\n")
+                format!("q4\t1700000000\thits\t7\t-\t{written},z\t1\t1\t-\t-\tx\n")
             );
             assert_eq!(text.matches('\n').count(), 1, "{given:?}");
-            assert_eq!(text.split('\t').count(), 10, "{given:?}");
+            assert_eq!(text.split('\t').count(), 11, "{given:?}");
         }
     }
 
@@ -301,10 +306,10 @@ mod tests {
             let text = line(&record(Ended::Hits, &[], &[], query));
             assert_eq!(
                 text,
-                format!("q3\t1700000000\thits\t7\t-\t-\t-\t-\t-\t{written}\n")
+                format!("q4\t1700000000\thits\t7\t-\t-\t-\t1\t-\t-\t{written}\n")
             );
             assert_eq!(text.matches('\n').count(), 1, "{query:?}");
-            assert_eq!(text.split('\t').count(), 10, "{query:?}");
+            assert_eq!(text.split('\t').count(), 11, "{query:?}");
         }
         let long = "word ".repeat(10_000);
         let text = line(&record(Ended::Hits, &[], &[], &long));
@@ -315,8 +320,24 @@ mod tests {
     fn a_time_before_1970_is_second_0() {
         let mut before = record(Ended::Nothing, &[], &[], "x");
         before.at = UNIX_EPOCH - Duration::from_secs(5);
-        assert!(line(&before).starts_with("q3\t0\t"));
+        assert!(line(&before).starts_with("q4\t0\t"));
         before.at = UNIX_EPOCH;
-        assert!(line(&before).starts_with("q3\t0\t"));
+        assert!(line(&before).starts_with("q4\t0\t"));
+    }
+
+    #[test]
+    fn a_line_is_q4_with_the_page_before_the_hits() {
+        let hits = [hit(FIRST, 3, 1, false)];
+        for page in [1, 3] {
+            let mut paged = record(Ended::Hits, &[], &hits, "x");
+            paged.page = page;
+            let text = line(&paged);
+            let fields: Vec<&str> = text.trim_end_matches('\n').split('\t').collect();
+            assert_eq!(fields.len(), 11, "{text:?}");
+            assert_eq!(fields[0], "q4");
+            assert_eq!(fields[7], page.to_string());
+            assert_eq!(fields[8], format!("{FIRST}#r3"));
+            assert_eq!(fields[10], "x");
+        }
     }
 }

@@ -23,6 +23,7 @@ import re
 import subprocess
 import sys
 import time
+import unicodedata
 from pathlib import Path
 
 STORE = Path("/work/store")
@@ -70,13 +71,32 @@ def source(line):
     return {"parent": parent, "generation": generation, "first": first, "last": int(m.group(4) or first)}
 
 
-def parse(question, form, stdout):
-    """The hits of one recall output: a header line, then exactly as many lines as it says, to the end."""
+REORDERS = set("\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")
+
+
+def word(text):
+    if text and not text.startswith("=") and all(c.isascii() and (c.isalnum() or c in "/._-+:@%,=") for c in text):
+        return text
+    return "'" + text.replace("'", "'\\''") + "'"
+
+
+def more_line(budget, text, scope=None):
+    if any(unicodedata.category(c) == "Cc" or c in REORDERS for c in text + (scope or "")):
+        return "more: the same command with --page 2"
+    flags = f" --in={word(scope)}" if scope is not None else ""
+    return f"more: bilbo recall --page 2{flags} --budget {word(str(budget))} -- {word(text)}"
+
+
+def parse(question, form, stdout, more=None):
+    """The hits of one recall output: a header line, then exactly as many lines as it says, to the end. After the
+    last hit the one line `more` (the next page's) can stand, and nothing else."""
     lines = stdout.split("\n")
     if lines.pop() != "":
         sys.exit(f"search: {question}/{form}: stdout does not end with a line feed")
     hits, i = [], 0
     while i < len(lines):
+        if hits and more is not None and i == len(lines) - 1 and lines[i] == more:
+            break
         m = HEADER.match(lines[i])
         if not m:
             sys.exit(f"search: {question}/{form}: line {i + 1} is not a header: {lines[i][:200]!r}")
@@ -124,10 +144,12 @@ def recall(question, form, name, text, settings, binary=BILBO, store=STORE, scop
     stdout, stderr = done.stdout.decode(), done.stderr.decode()
     err = stderr.split("\n")[:-1] if stderr.endswith("\n") else stderr.split("\n")
     if done.returncode == 1 and err and err[-1] == "bilbo: nothing matched":
+        if stdout:
+            sys.exit(f"search: {question}/{form}: recall said nothing matched and printed {stdout[:200]!r}")
         err = err[:-1]
         hits = []
     elif done.returncode == 0:
-        hits = parse(question, form, stdout)
+        hits = parse(question, form, stdout, more_line(settings["budget"], text, scope))
     else:
         sys.exit(f"search: {question}/{form}: recall exited {done.returncode}: {stderr.strip()[:500]}")
     kept, passed = None, {key: 0 for key, _ in PASSED_ITEMS}
@@ -297,8 +319,67 @@ def header_lines():
     return 0
 
 
+def trailer_lines():
+    ref = "2T6W9YB0DE#r1"
+    hit = f"=== {ref}\t1 line\nbody\n"
+    plain, escaped = more_line(8000, "carrot rows", "/r/a"), more_line(8000, "carrot\nrows")
+    if plain != "more: bilbo recall --page 2 --in=/r/a --budget 8000 -- 'carrot rows'" or escaped != "more: the same command with --page 2":
+        print(f"lines: the trailers read {plain!r} and {escaped!r}")
+        return 1
+    if more_line(8000, "=ls") != "more: bilbo recall --page 2 --budget 8000 -- '=ls'":
+        print(f"lines: a query that starts with = reads {more_line(8000, '=ls')!r}")
+        return 1
+    for query, scope, line in (("carrot rows", "/r/a", plain), ("carrot\nrows", None, escaped), ("it's", None, more_line(8000, "it's"))):
+        got = parse("q", "query", f"{hit}{line}\n", more_line(8000, query, scope))
+        if len(got) != 1 or got[0]["text"] != "body":
+            print(f"lines: the trailer {line!r} was not taken for the arguments")
+            return 1
+    inside = parse("q", "query", f"=== {ref}\t2 lines\nbody\n{plain}\n", plain)
+    if len(inside) != 1 or inside[0]["text"] != f"body\n{plain}":
+        print("lines: a hit whose last counted line is a trailer's text was not read as the hit's")
+        return 1
+    refused = [("another query", f"{hit}{more_line(8000, 'other', '/r/a')}\n"),
+               ("another page", f"{hit}{plain.replace('--page 2', '--page 3')}\n"),
+               ("one byte more", f"{hit}{plain} \n"),
+               ("no hit before it", f"{plain}\n"),
+               ("two trailers", f"{hit}{plain}\n{plain}\n"),
+               ("a line after it", f"{hit}{plain}\nmore\n")]
+    for why, out in refused:
+        try:
+            parse("q", "query", out, plain)
+        except SystemExit:
+            continue
+        print(f"lines: a trailer was accepted with {why}")
+        return 1
+    try:
+        parse("q", "query", f"{hit}{plain}\n")
+    except SystemExit:
+        return 0
+    print("lines: a trailer was accepted where none is expected")
+    return 1
+
+
+def no_match_lines():
+    import os
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        for printed, stops in ((b"", False), (b"more: bilbo recall --page 2 -- q\\n", True)):
+            program = Path(tmp) / "recall.sh"
+            program.write_text("#!/bin/sh\nprintf '%b' '" + printed.decode() + "'\necho 'bilbo: nothing matched' >&2\nexit 1\n")
+            os.chmod(program, 0o755)
+            try:
+                got = recall("q", "query", "n", "text", DEFAULTS, binary=str(program), store=Path(tmp))
+            except SystemExit:
+                got = None
+            if (got is None) != stops or (got is not None and got[0] != []):
+                print(f"lines: a no-match run that printed {printed!r} gave {got}")
+                return 1
+    return 0
+
+
 def lines():
-    if header_lines():
+    if header_lines() or trailer_lines() or no_match_lines():
         return 1
     table = [("bilbo: typos: carot as carrot", [["carot", ["carrot"]]]),
              ("bilbo: typos: carot as carrot; setin as set, setton", [["carot", ["carrot"]], ["setin", ["set", "setton"]]])]

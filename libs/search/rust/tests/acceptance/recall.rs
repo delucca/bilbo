@@ -1,12 +1,13 @@
 use std::collections::BTreeMap;
 
-use bilbo_entries::reader::Reader;
+use bilbo_entries::reader::{Passage, Piece, Reader};
 use bilbo_search::analyze::{Detect, Language, MAX_LABEL_WORDS, Omit, label_words};
 use bilbo_search::bm25::Bm25;
 use bilbo_search::chunk::Size;
+use bilbo_search::index::IndexError;
 use bilbo_search::lookup::Lookup;
 use bilbo_search::position::Manifest;
-use bilbo_search::rank::{Candidate, Expanded, Query, Ranker};
+use bilbo_search::rank::{Candidate, Expanded, Query, Ranked, Ranker};
 use bilbo_search::recall::hit::Hit;
 use bilbo_search::recall::log::QueryLog;
 use bilbo_search::recall::scope::Unnamed;
@@ -17,6 +18,7 @@ use bilbo_search::tokenizer::Tokenizer;
 use bilbo_search::typo;
 use bilbo_search::update::{self, Plan};
 use bilbo_search::work::Request as Work;
+use bilbo_store::entries::RecordRange;
 use bilbo_store::id::Id;
 
 use crate::fakes::{
@@ -63,7 +65,45 @@ fn readers() -> Vec<Box<dyn Reader>> {
         Box::new(Lines("memo")),
         Box::new(Fenced("fenced")),
         Box::new(Joined("joined")),
+        Box::new(Sourced("sourced")),
     ]
+}
+
+struct Sourced(&'static str);
+
+impl Reader for Sourced {
+    fn kind(&self) -> &'static str {
+        self.0
+    }
+
+    fn passages(&self, records: &[&[u8]]) -> Vec<Passage> {
+        (1..)
+            .zip(records)
+            .map(|(record, bytes)| {
+                let line = String::from_utf8_lossy(bytes);
+                let (head, body) = line.trim_end_matches('\n').split_once('|').expect("a head");
+                let text = format!("{head}\n{body}");
+                Passage {
+                    range: RecordRange {
+                        first: record,
+                        count: 1,
+                    },
+                    pieces: vec![Piece {
+                        start: head.len() + 1,
+                        label: "line:".to_owned(),
+                    }],
+                    ends: vec![text.len()],
+                    text,
+                    at: None,
+                    outline: None,
+                }
+            })
+            .collect()
+    }
+
+    fn appends_only(&self) -> bool {
+        true
+    }
 }
 
 fn work_request() -> Work {
@@ -106,6 +146,7 @@ fn request(text: &str) -> Request {
         scope: Vec::new(),
         budget: 100_000,
         apart_budget: 0,
+        page: 1,
         at: at(1_700_000_000),
     }
 }
@@ -208,8 +249,8 @@ fn fields(kept: &Logged) -> Vec<String> {
     assert_eq!(kept.0.len(), 1, "one line a query: {:?}", kept.0);
     let line = kept.0[0].strip_suffix('\n').expect("a whole line");
     let fields: Vec<String> = line.split('\t').map(str::to_owned).collect();
-    assert_eq!(fields.len(), 10, "{line:?}");
-    assert_eq!(fields[0], "q3");
+    assert_eq!(fields.len(), 11, "{line:?}");
+    assert_eq!(fields[0], "q4");
     fields
 }
 
@@ -326,6 +367,8 @@ fn a_query_that_matches_nothing_ends_with_no_hit_and_the_count_searched() {
                 scope: None,
                 apart: Vec::new(),
                 expanded: Vec::new(),
+                more: false,
+                ended: None,
             },
             "{text}"
         );
@@ -388,6 +431,8 @@ fn a_store_with_no_index_is_not_searched() {
             scope: None,
             apart: Vec::new(),
             expanded: Vec::new(),
+            more: false,
+            ended: None,
         }
     );
     assert_eq!(scripted.calls.get(), 0);
@@ -423,6 +468,8 @@ fn no_index_by_the_callers_word_is_the_no_index_answer_and_the_query_is_logged()
             scope: None,
             apart: Vec::new(),
             expanded: Vec::new(),
+            more: false,
+            ended: None,
         }
     );
     assert!(log.reads.borrow().is_empty());
@@ -816,8 +863,8 @@ fn every_query_is_logged_also_one_that_matches_nothing() {
     assert_eq!(fields(&cases[0].1)[3], "6");
     assert_eq!(fields(&cases[1].1)[3], "6");
     assert_eq!(fields(&cases[2].1)[3], "0");
-    assert!(fields(&cases[0].1)[7].starts_with(&id(2).to_string()));
-    assert_eq!(fields(&cases[1].1)[7], "-");
+    assert!(fields(&cases[0].1)[8].starts_with(&id(2).to_string()));
+    assert_eq!(fields(&cases[1].1)[8], "-");
 }
 
 #[test]
@@ -867,9 +914,9 @@ fn an_index_that_fails_at_any_read_ends_the_run_with_its_error_and_a_logged_line
         assert_eq!(fields[1], "1700000000", "{method}");
         assert_eq!(fields[2], "failed", "{method}");
         assert_eq!(fields[3], "0", "{method}");
-        assert_eq!(fields[7], "-", "{method}");
         assert_eq!(fields[8], "-", "{method}");
-        assert_eq!(fields[9], "bilbo index format", "{method}");
+        assert_eq!(fields[9], "-", "{method}");
+        assert_eq!(fields[10], "bilbo index format", "{method}");
     }
     let mut unreadable = shelf_of_six();
     let index = index_of(&unreadable);
@@ -910,13 +957,15 @@ fn an_index_the_caller_withholds_is_not_read_and_the_query_is_logged() {
             scope: None,
             apart: Vec::new(),
             expanded: Vec::new(),
+            more: false,
+            ended: None,
         }
     );
     assert_eq!(scripted.calls.get(), 0);
     assert!(log.reads.borrow().is_empty());
     let fields = fields(&kept);
     assert_eq!(fields[2], "withheld");
-    assert_eq!(fields[9], "release\\tchecklist");
+    assert_eq!(fields[10], "release\\tchecklist");
 }
 
 #[test]
@@ -1615,8 +1664,8 @@ fn a_word_taken_for_a_typo_is_in_the_output_and_in_the_log() {
     );
     let line = fields(&kept);
     assert_eq!(line[2], "hits");
-    assert_eq!(line[8], "carot>carrot");
-    assert_eq!(line[9], "carot soup");
+    assert_eq!(line[9], "carot>carrot");
+    assert_eq!(line[10], "carot soup");
     let mut kept = Logged::default();
     let finished = ask_with_rule(
         &log,
@@ -1626,7 +1675,7 @@ fn a_word_taken_for_a_typo_is_in_the_output_and_in_the_log() {
         default_rule(),
     );
     assert_eq!(finished.result.expect("a run").expanded, []);
-    assert_eq!(fields(&kept)[8], "-");
+    assert_eq!(fields(&kept)[9], "-");
     let mut kept = Logged::default();
     let finished = ask_with_rule(
         &log,
@@ -1636,7 +1685,7 @@ fn a_word_taken_for_a_typo_is_in_the_output_and_in_the_log() {
         typo::Rule::OFF,
     );
     assert_eq!(finished.result.expect("a run").expanded, []);
-    assert_eq!(fields(&kept)[8], "-");
+    assert_eq!(fields(&kept)[9], "-");
 }
 
 #[test]
@@ -1653,8 +1702,8 @@ fn a_near_that_fails_ends_the_run_as_failed() {
     assert!(error.to_string().contains("near failed"));
     let line = fields(&kept);
     assert_eq!(line[2], "failed");
-    assert_eq!(line[8], "-");
-    assert_eq!(line[9], "carot");
+    assert_eq!(line[9], "-");
+    assert_eq!(line[10], "carot");
     let mut kept = Logged::default();
     let finished = ask_with_rule(
         &log,
@@ -1720,7 +1769,7 @@ fn a_pairs_that_fails_ends_the_run_as_failed() {
     assert!(error.to_string().contains("pairs failed"));
     let line = fields(&kept);
     assert_eq!(line[2], "failed");
-    assert_eq!(line[9], "alpha beta");
+    assert_eq!(line[10], "alpha beta");
     let mut kept = Logged::default();
     let finished = ask_weighted(
         &log,
@@ -2031,7 +2080,7 @@ fn a_hit_in_either_list_is_hits_and_none_in_both_is_nothing() {
     assert_eq!(apart_entries(&output), [id(1)]);
     let logged = fields(&kept);
     assert_eq!(logged[2], "hits");
-    assert!(logged[7].starts_with(&id(1).to_string()), "{logged:?}");
+    assert!(logged[8].starts_with(&id(1).to_string()), "{logged:?}");
     let (output, kept) = ask(&log, &index, &with_apart("zzzzzz"));
     assert!(output.hits.is_empty() && output.apart.is_empty());
     assert_eq!(fields(&kept)[2], "nothing");
@@ -2086,4 +2135,417 @@ fn a_position_stands_against_a_manifest_and_a_store() {
         stand(Some(&elsewhere), &manifest(), &log).expect("a stand"),
         Stand::Unknown
     );
+}
+
+struct Lists {
+    chunks: Vec<Candidate>,
+    apart: Vec<Candidate>,
+}
+
+impl Ranker for Lists {
+    fn rank(&self, _query: &Query, _limit: usize) -> Result<Ranked, IndexError> {
+        Ok(Ranked {
+            candidates: self.chunks.clone(),
+            unscoped: Vec::new(),
+            apart: self.apart.clone(),
+            expanded: Vec::new(),
+        })
+    }
+}
+
+fn docs_of(index: &Docs, entries: &[u8]) -> Vec<u32> {
+    entries
+        .iter()
+        .map(|n| {
+            let place = index
+                .rows
+                .iter()
+                .position(|row| row.entry == id(*n))
+                .expect("a row");
+            u32::try_from(place).expect("a small index")
+        })
+        .collect()
+}
+
+fn lists(index: &Docs, chunks: &[u8], apart: &[u8]) -> Lists {
+    Lists {
+        chunks: candidates(index, &docs_of(index, chunks)),
+        apart: candidates(index, &docs_of(index, apart)),
+    }
+}
+
+fn ask_lists(log: &Log, index: &Docs, lists: &Lists, request: &Request) -> (Output, Logged) {
+    let mut kept = Logged::default();
+    let finished = run(
+        request,
+        &Reads {
+            entries: log,
+            labels: log,
+        },
+        &readers(),
+        &Bytes,
+        Access::Read {
+            index,
+            rankers: &[lists],
+        },
+        &shown,
+        &mut kept,
+    );
+    assert_eq!(finished.unlogged, None);
+    (finished.result.expect("a run"), kept)
+}
+
+fn on_page(request: &Request, page: u64) -> Request {
+    Request {
+        page,
+        ..request.clone()
+    }
+}
+
+fn one_page_of(texts: &[String]) -> usize {
+    SHOWN_HEADER + texts[0].len()
+}
+
+fn items(count: u8) -> (Log, Vec<String>) {
+    let texts: Vec<String> = (1..=count)
+        .map(|n| format!("release checklist item {n}"))
+        .collect();
+    let mut log = Log::new();
+    for (n, text) in (1..=count).zip(&texts) {
+        log.put(n, "note", &[text]);
+    }
+    (log, texts)
+}
+
+#[test]
+fn page_one_is_the_answer_of_today() {
+    let log = notes_and_apart(3, 2);
+    let index = index_of(&log);
+    let asked = with_apart("release checklist");
+    assert_eq!(asked.page, 1);
+    let (output, _) = ask(&log, &index, &asked);
+    assert_eq!(entries_of(&output), [id(1), id(2), id(3)]);
+    assert_eq!(apart_entries(&output), [id(11), id(12)]);
+    assert!(!output.more);
+    assert_eq!(output.ended, None);
+    assert_eq!(output.skipped, Skipped::default());
+}
+
+#[test]
+fn a_page_is_what_the_rounds_before_it_left() {
+    let texts: Vec<String> = (1..=6)
+        .map(|n| format!("k{n}a k{n}b k{n}c k{n}d k{n}e k{n}f"))
+        .collect();
+    let mut log = Log::new();
+    for (n, text) in (1..=6u8).zip(&texts) {
+        let text = if n == 3 { &texts[0] } else { text };
+        log.put(n, "note", &[text]);
+    }
+    let index = index_of(&log);
+    let ranked = lists(&index, &[1, 2, 3, 4, 5, 6], &[]);
+    let mut big = request("unused");
+    big.limits = PASS;
+    let mut asked = big.clone();
+    asked.budget = 2 * (SHOWN_HEADER + texts[0].len());
+    let (whole, _) = ask_lists(&log, &index, &ranked, &big);
+    let mut joined = Vec::new();
+    let mut more = Vec::new();
+    let mut copies = Vec::new();
+    let mut pages = Vec::new();
+    for page in 1..=3 {
+        let (output, _) = ask_lists(&log, &index, &ranked, &on_page(&asked, page));
+        pages.push(entries_of(&output));
+        joined.extend(entries_of(&output));
+        more.push(output.more);
+        copies.push(output.skipped.copies);
+    }
+    assert_eq!(pages, [vec![id(1), id(2)], vec![id(4), id(5)], vec![id(6)]]);
+    assert_eq!(joined, entries_of(&whole));
+    assert_eq!(joined, [id(1), id(2), id(4), id(5), id(6)]);
+    assert_eq!(more, [true, true, false]);
+    assert_eq!(copies, [0, 1, 1]);
+}
+
+#[test]
+fn a_later_page_passes_over_what_an_earlier_one_showed() {
+    const UNLIKE: &str = "gallery stationed pen big chair our penguin";
+    const OTHER_ONE: &str = "bridge marble copper velvet swan oven plume";
+    assert_eq!(UNLIKE.len(), RELEASE.len());
+    assert_eq!(OTHER_ONE.len(), RELEASE.len());
+    let mut log = Log::new();
+    log.put(1, "note", &[RELEASE]);
+    log.put(2, "note", &[RELEASE]);
+    let index = index_of(&log);
+    let ranked = lists(&index, &[1, 2], &[]);
+    let mut asked = request("unused");
+    asked.limits = PASS;
+    asked.budget = SHOWN_HEADER + RELEASE.len();
+    let (first, _) = ask_lists(&log, &index, &ranked, &asked);
+    assert_eq!(entries_of(&first), [id(1)]);
+    assert_eq!(first.skipped.copies, 0);
+    let (second, _) = ask_lists(&log, &index, &ranked, &on_page(&asked, 2));
+    assert!(second.hits.is_empty());
+    assert_eq!(second.skipped.copies, 1);
+    assert_eq!(second.ended, Some(1));
+
+    let mut log = Log::new();
+    log.put(1, "note", &[RELEASE]);
+    log.put(2, "note", &["standup moved to thursday morning"]);
+    log.put(3, "joined", &["zzz", UNLIKE]);
+    log.put(4, "joined", &["zzz", RELEASE]);
+    log.put(5, "joined", &["zzz", UNLIKE]);
+    let index = index_of(&log);
+    let ranked = lists(&index, &[1, 2], &[3, 4, 5]);
+    let mut asked = with_apart("unused");
+    asked.limits = PASS;
+    asked.budget = SHOWN_HEADER + RELEASE.len();
+    asked.apart_budget = apart_header(2) + 4 + UNLIKE.len();
+    let (first, _) = ask_lists(&log, &index, &ranked, &asked);
+    assert_eq!(entries_of(&first), [id(1)]);
+    assert_eq!(apart_entries(&first), [id(3)]);
+    assert_eq!(first.skipped.copies, 0);
+    let (second, _) = ask_lists(&log, &index, &ranked, &on_page(&asked, 2));
+    assert_eq!(entries_of(&second), [id(2)]);
+    assert!(second.apart.is_empty());
+    assert_eq!(second.skipped.copies, 2);
+}
+
+#[test]
+fn a_chunk_is_never_passed_over_for_a_note_of_an_earlier_page() {
+    const UNLIKE: &str = "gallery stationed pen big chair our penguin";
+    let mut log = Log::new();
+    log.put(1, "note", &[UNLIKE]);
+    log.put(2, "note", &[RELEASE]);
+    log.put(3, "joined", &["zzz", RELEASE]);
+    let index = index_of(&log);
+    let mut asked = with_apart("unused");
+    asked.limits = PASS;
+    asked.budget = SHOWN_HEADER + RELEASE.len();
+    asked.apart_budget = apart_header(2) + 4 + RELEASE.len();
+    let with_notes = lists(&index, &[1, 2], &[3]);
+    let (first, _) = ask_lists(&log, &index, &with_notes, &asked);
+    assert_eq!(entries_of(&first), [id(1)]);
+    assert_eq!(apart_entries(&first), [id(3)]);
+    let (second, _) = ask_lists(&log, &index, &with_notes, &on_page(&asked, 2));
+    assert_eq!(entries_of(&second), [id(2)]);
+    assert_eq!(second.skipped.copies, 0);
+
+    let mut alone = asked.clone();
+    alone.apart_budget = 0;
+    let without = lists(&index, &[1, 2], &[]);
+    for page in 1..=2 {
+        let (with, _) = ask_lists(&log, &index, &with_notes, &on_page(&asked, page));
+        let (none, _) = ask_lists(&log, &index, &without, &on_page(&alone, page));
+        assert_eq!(entries_of(&with), entries_of(&none), "{page}");
+    }
+}
+
+#[test]
+fn each_list_pages_in_its_own_room() {
+    let mut log = Log::new();
+    for n in 1..=4 {
+        log.put(n, "note", &[RELEASE]);
+        log.put(10 + n, "joined", &ALONE);
+    }
+    let index = index_of(&log);
+    let ranked = lists(&index, &[1, 2, 3, 4], &[11, 12, 13, 14]);
+    let mut asked = with_apart("unused");
+    asked.budget = 2 * (SHOWN_HEADER + RELEASE.len());
+    asked.apart_budget = 2 * (apart_header(2) + ALONE.join("\n").len());
+    let (second, _) = ask_lists(&log, &index, &ranked, &on_page(&asked, 2));
+    assert_eq!(entries_of(&second), [id(3), id(4)]);
+    assert_eq!(apart_entries(&second), [id(13), id(14)]);
+    assert_eq!(cost(&second.hits), asked.budget);
+    assert_eq!(cost(&second.apart), asked.apart_budget);
+    assert!(second.hits.iter().chain(&second.apart).all(|hit| !hit.cut));
+
+    let mut log = Log::new();
+    for n in 1..=8 {
+        log.put(n, "note", &[RELEASE]);
+    }
+    let index = index_of(&log);
+    let ranked = lists(&index, &[1, 2, 3, 4, 5, 6, 7, 8], &[]);
+    let mut asked = with_apart("unused");
+    asked.budget = 2 * (SHOWN_HEADER + RELEASE.len());
+    asked.apart_budget = 2 * (SHOWN_HEADER + RELEASE.len());
+    let (first, _) = ask_lists(&log, &index, &ranked, &asked);
+    let (second, _) = ask_lists(&log, &index, &ranked, &on_page(&asked, 2));
+    assert_eq!(entries_of(&first), [id(1), id(2), id(3), id(4)]);
+    assert_eq!(entries_of(&second), [id(5), id(6), id(7), id(8)]);
+}
+
+#[test]
+fn more_is_said_while_a_list_has_not_ended() {
+    let mut log = Log::new();
+    for n in 1..=2 {
+        log.put(n, "note", &[RELEASE]);
+        log.put(10 + n, "joined", &ALONE);
+    }
+    let index = index_of(&log);
+    let one_chunk = SHOWN_HEADER + RELEASE.len();
+    let one_apart = apart_header(2) + ALONE.join("\n").len();
+    let table = [
+        (&[1, 2][..], &[][..], 100_000, 100_000, 1, false),
+        (&[1][..], &[11, 12][..], 100_000, one_apart, 1, true),
+        (&[1, 2][..], &[11][..], one_chunk, 100_000, 1, true),
+        (&[1][..], &[11, 12][..], 100_000, one_apart, 5, false),
+        (&[1][..], &[11, 12][..], 100_000, 0, 1, false),
+        (&[1, 2][..], &[11, 12][..], one_chunk, one_apart, 1, true),
+        (&[1, 2][..], &[11, 12][..], one_chunk, one_apart, 2, false),
+    ];
+    for (chunks, apart, budget, apart_budget, page, more) in table {
+        let ranked = lists(&index, chunks, apart);
+        let mut asked = with_apart("unused");
+        asked.budget = budget;
+        asked.apart_budget = apart_budget;
+        asked.page = page;
+        let (output, _) = ask_lists(&log, &index, &ranked, &asked);
+        assert_eq!(output.more, more, "{chunks:?} {apart:?} {page}");
+    }
+}
+
+#[test]
+fn a_page_past_the_end_names_the_last_page_that_showed_a_hit() {
+    let (log, texts) = items(3);
+    let index = index_of(&log);
+    let ranked = lists(&index, &[1, 2, 3], &[]);
+    let mut asked = request("unused");
+    asked.budget = 2 * one_page_of(&texts);
+    asked.page = 5;
+    let (output, _) = ask_lists(&log, &index, &ranked, &asked);
+    assert!(output.hits.is_empty() && output.apart.is_empty());
+    assert!(!output.more);
+    assert_eq!(output.ended, Some(2));
+
+    let mut nothing = request("zzzzzz");
+    nothing.page = 2;
+    let (output, _) = ask(&log, &index, &nothing);
+    assert_eq!(output.ended, None);
+    assert!(!output.more);
+}
+
+#[test]
+fn a_later_pages_counts_are_of_the_whole_walk_and_its_log_line_of_its_own_hits() {
+    const TEXTS: [&str; 4] = [
+        RELEASE,
+        "gallery stationed pen big chair our penguin",
+        "bridge marble copper velvet swan oven plume",
+        "harbors wombat quartz juniper elm ink raven",
+    ];
+    for text in TEXTS {
+        assert_eq!(text.len(), RELEASE.len());
+    }
+    let mut log = Log::new();
+    let held = ["damaged one", "damaged two", "damaged three"];
+    let of = [
+        TEXTS[0], TEXTS[0], held[0], TEXTS[0], TEXTS[1], TEXTS[1], held[1], held[2], TEXTS[2],
+        TEXTS[3],
+    ];
+    for (n, text) in (1..=10u8).zip(of) {
+        log.put(n, "note", &[text]);
+    }
+    let index = index_of(&log);
+    log.retouch(3, |held| held.damaged = true);
+    log.retouch(7, |held| held.damaged = true);
+    log.retouch(8, |held| held.damaged = true);
+    let ranked = lists(&index, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10], &[]);
+    let mut asked = request("unused");
+    asked.limits = PASS;
+    asked.budget = 2 * (SHOWN_HEADER + RELEASE.len());
+    let (first, _) = ask_lists(&log, &index, &ranked, &asked);
+    assert_eq!(entries_of(&first), [id(1), id(5)]);
+    assert_eq!((first.skipped.copies, first.left_out), (2, 1));
+    let (second, kept) = ask_lists(&log, &index, &ranked, &on_page(&asked, 2));
+    assert_eq!(entries_of(&second), [id(9), id(10)]);
+    assert_eq!((second.skipped.copies, second.left_out), (3, 3));
+    let hits = &fields(&kept)[8];
+    assert!(hits.contains(&id(9).to_string()) && hits.contains(&id(10).to_string()));
+    assert!(!hits.contains(&id(1).to_string()) && !hits.contains(&id(5).to_string()));
+}
+
+#[test]
+fn a_list_ends_at_a_note_no_room_can_show() {
+    let long = "s".repeat(50);
+    let mut log = Log::new();
+    log.put(1, "sourced", &[&format!("{long}|body")]);
+    log.put(2, "sourced", &["s|b"]);
+    log.put(3, "note", &["standup moved to thursday morning"]);
+    let index = index_of(&log);
+    let mut asked = request("unused");
+    asked.query.apart = vec!["sourced".to_owned()];
+    let short = lists(&index, &[], &[2]);
+    let (output, _) = ask_lists(&log, &index, &short, &asked_with_room(&asked, 100_000));
+    let room = shown(&output.apart[0]).len() + 3;
+
+    let stuck = lists(&index, &[], &[1, 2]);
+    let narrow = asked_with_room(&asked, room);
+    let (page_one, _) = ask_lists(&log, &index, &stuck, &narrow);
+    assert!(page_one.hits.is_empty() && page_one.apart.is_empty());
+    assert!(!page_one.more);
+    let (page_two, _) = ask_lists(&log, &index, &stuck, &on_page(&narrow, 2));
+    assert!(page_two.hits.is_empty() && page_two.apart.is_empty());
+    assert_eq!(page_two.ended, None);
+
+    let with_chunk = lists(&index, &[3], &[1, 2]);
+    let (shown_one, _) = ask_lists(&log, &index, &with_chunk, &narrow);
+    assert_eq!(entries_of(&shown_one), [id(3)]);
+    assert!(shown_one.apart.is_empty());
+    assert!(!shown_one.more);
+}
+
+fn asked_with_room(request: &Request, apart_budget: usize) -> Request {
+    Request {
+        apart_budget,
+        ..request.clone()
+    }
+}
+
+#[test]
+fn a_note_that_waited_is_judged_again_against_the_chunks_of_its_page() {
+    let mut log = Log::new();
+    log.put(
+        1,
+        "note",
+        &["alpha bravo charlie delta echo foxtrot golf hotel india juliet"],
+    );
+    log.put(2, "joined", &["2026-11-07 14:30", "beds weeded"]);
+    log.put(
+        3,
+        "sourced",
+        &["n1 head line|many words of its own here that make this note long enough to count"],
+    );
+    log.put(4, "sourced", &["2026-11-07 14:30|beds weeded"]);
+    log.put(5, "sourced", &["n3 head line|short words"]);
+    let index = index_of(&log);
+    let ranked = lists(&index, &[1, 2], &[3, 4, 5]);
+    assert_eq!(ranked.chunks[1].found.digest, ranked.apart[1].found.digest);
+    let mut asked = with_apart("unused");
+    let (whole, _) = ask_lists(&log, &index, &ranked, &asked);
+    assert_eq!(entries_of(&whole), [id(1), id(2)]);
+    assert_eq!(apart_entries(&whole), [id(3), id(4), id(5)]);
+    let cost_of = |hits: &[Hit], entry: u8| {
+        let found: Vec<Hit> = hits
+            .iter()
+            .filter(|hit| hit.found.entry == id(entry))
+            .cloned()
+            .collect();
+        assert_eq!(found.len(), 1);
+        cost(&found)
+    };
+    asked.limits = PASS;
+    asked.budget = cost_of(&whole.hits, 1);
+    asked.apart_budget = cost_of(&whole.apart, 3) + 1;
+    assert!(cost_of(&whole.hits, 2) <= asked.budget);
+    assert!(cost_of(&whole.apart, 4) <= asked.apart_budget);
+    assert!(cost_of(&whole.apart, 5) <= asked.apart_budget);
+
+    let (first, _) = ask_lists(&log, &index, &ranked, &asked);
+    assert_eq!(entries_of(&first), [id(1)]);
+    assert_eq!(apart_entries(&first), [id(3)]);
+    assert!(first.more);
+    assert_eq!(first.skipped.copies, 0);
+    let (second, _) = ask_lists(&log, &index, &ranked, &on_page(&asked, 2));
+    assert_eq!(entries_of(&second), [id(2)]);
+    assert_eq!(apart_entries(&second), [id(5)]);
+    assert_eq!(second.skipped.copies, 1);
 }

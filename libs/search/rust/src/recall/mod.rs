@@ -5,7 +5,7 @@ pub mod pack;
 pub mod scope;
 pub mod select;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::time::SystemTime;
@@ -18,11 +18,12 @@ use bilbo_store::labels::Labels;
 
 use crate::chunk::Size;
 use crate::index::IndexError;
-use crate::lookup::Lookup;
+use crate::lookup::{Found, Lookup};
 use crate::position::{self, Manifest, Position, Standing};
 use crate::rank::{self, Candidate, Expanded, Query, Ranker};
 use hit::{Hit, Readback};
 use log::{Ended, QueryLog, Record};
+use pack::Place;
 use scope::Unnamed;
 use select::{Limits, Selection, Skipped};
 
@@ -36,6 +37,7 @@ pub struct Request {
     pub scope: Vec<String>,
     pub budget: usize,
     pub apart_budget: usize,
+    pub page: u64,
     pub at: SystemTime,
 }
 
@@ -78,6 +80,8 @@ pub struct Output {
     pub skipped: Skipped,
     pub scope: Option<Scoped>,
     pub expanded: Vec<Expanded>,
+    pub more: bool,
+    pub ended: Option<u64>,
 }
 
 impl Output {
@@ -91,6 +95,8 @@ impl Output {
             skipped: Skipped::default(),
             scope: None,
             expanded: Vec::new(),
+            more: false,
+            ended: None,
         }
     }
 }
@@ -186,6 +192,7 @@ pub fn run(
         kinds: &request.query.kinds,
         scope: &request.scope,
         named,
+        page: request.page,
         hits,
         apart,
         expanded,
@@ -316,51 +323,224 @@ fn search(
         .collect();
     let shared = shared_shorts(shorts, entries)?;
     let selection = RefCell::new(Selection::new(request.limits));
-    let mut left_out = 0u64;
-    let mut back = Readback::new(entries, readers, tokens, request.chunk);
-    let mut gather = |candidates: Vec<Candidate>, apart: bool, budget: usize| {
-        let read = candidates
-            .into_iter()
-            .filter(|candidate| selection.borrow_mut().admits(&candidate.found))
-            .filter_map(|candidate| match back.hit(candidate.found) {
-                Some(mut hit) => {
-                    hit.shared_short = shared.contains(&hit.found.entry.short());
-                    hit.apart = apart;
-                    Some(Ok::<Hit, Error>(hit))
-                }
-                None => {
-                    left_out += 1;
-                    None
-                }
-            });
-        pack::pack(
-            read,
-            tokens,
-            shown,
-            &mut |hit| selection.borrow_mut().keeps(hit),
-            budget,
-        )
-    };
     let room = if apart.is_empty() {
         request.budget + request.apart_budget
     } else {
         request.budget
     };
-    let hits = gather(candidates, false, room)?;
-    let apart_hits = if request.apart_budget == 0 {
-        Vec::new()
-    } else {
-        gather(apart, true, request.apart_budget)?
+    let context = Context {
+        back: RefCell::new(Readback::new(entries, readers, tokens, request.chunk)),
+        left_out: Cell::new(0),
+        shared,
+        tokens,
+        shown,
     };
+    let mut main = List {
+        place: Place::default(),
+        rest: candidates.into_iter(),
+        apart: false,
+    };
+    let mut notes_list = List {
+        place: if request.apart_budget == 0 {
+            Place::closed()
+        } else {
+            Place::default()
+        },
+        rest: apart.into_iter(),
+        apart: true,
+    };
+    let walked = walk(request.page, || {
+        let hits = round(&context, &mut main, room, &selection)?;
+        let apart_hits = round(&context, &mut notes_list, request.apart_budget, &selection)?;
+        Ok::<Round, Error>(Round {
+            hits,
+            apart: apart_hits,
+            more: !(main.over() && notes_list.over()),
+        })
+    })?;
     let skipped = selection.borrow().skipped();
     Ok(Output {
-        hits,
-        apart: apart_hits,
+        hits: walked.hits,
+        apart: walked.apart,
         searched,
         stand,
-        left_out,
+        left_out: context.left_out.get(),
         skipped,
         scope: scoped,
         expanded,
+        more: walked.more,
+        ended: walked.ended,
     })
+}
+
+#[derive(Default)]
+struct Round {
+    hits: Vec<Hit>,
+    apart: Vec<Hit>,
+    more: bool,
+}
+
+struct Walked {
+    hits: Vec<Hit>,
+    apart: Vec<Hit>,
+    more: bool,
+    ended: Option<u64>,
+}
+
+fn walk<E>(page: u64, mut round: impl FnMut() -> Result<Round, E>) -> Result<Walked, E> {
+    let mut last_shown = None;
+    let mut number = 0;
+    loop {
+        number += 1;
+        let current = round()?;
+        let shown = !current.hits.is_empty() || !current.apart.is_empty();
+        if number == page {
+            return Ok(if shown {
+                Walked {
+                    hits: current.hits,
+                    apart: current.apart,
+                    more: current.more,
+                    ended: None,
+                }
+            } else {
+                Walked {
+                    hits: Vec::new(),
+                    apart: Vec::new(),
+                    more: false,
+                    ended: last_shown,
+                }
+            });
+        }
+        if shown {
+            last_shown = Some(number);
+        }
+        if !current.more {
+            return Ok(Walked {
+                hits: Vec::new(),
+                apart: Vec::new(),
+                more: false,
+                ended: last_shown,
+            });
+        }
+    }
+}
+
+struct Context<'a> {
+    back: RefCell<Readback<'a>>,
+    left_out: Cell<u64>,
+    shared: BTreeSet<Short>,
+    tokens: &'a dyn Tokens,
+    shown: &'a dyn Fn(&Hit) -> String,
+}
+
+struct List {
+    place: Place,
+    rest: std::vec::IntoIter<Candidate>,
+    apart: bool,
+}
+
+impl List {
+    fn over(&self) -> bool {
+        self.place.ended() || (self.rest.len() == 0 && !self.place.holds())
+    }
+}
+
+fn round(
+    context: &Context<'_>,
+    list: &mut List,
+    budget: usize,
+    selection: &RefCell<Selection>,
+) -> Result<Vec<Hit>, Error> {
+    let apart = list.apart;
+    let admits = |found: &Found| {
+        if apart {
+            selection.borrow_mut().admits_apart(found)
+        } else {
+            selection.borrow_mut().admits(found)
+        }
+    };
+    if let Some(waited) = list.place.take_held()
+        && admits(&waited.found)
+    {
+        list.place.hold(waited);
+    }
+    let read = list
+        .rest
+        .by_ref()
+        .filter(|candidate| admits(&candidate.found))
+        .filter_map(
+            |candidate| match context.back.borrow_mut().hit(candidate.found) {
+                Some(mut hit) => {
+                    hit.shared_short = context.shared.contains(&hit.found.entry.short());
+                    hit.apart = apart;
+                    Some(Ok::<Hit, Error>(hit))
+                }
+                None => {
+                    context.left_out.set(context.left_out.get() + 1);
+                    None
+                }
+            },
+        );
+    list.place.pack(
+        read,
+        context.tokens,
+        context.shown,
+        &mut |hit| selection.borrow_mut().keeps(hit),
+        budget,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use bilbo_store::entries::{Generation, RecordRange};
+    use bilbo_store::id::Id;
+
+    use super::{Hit, Round, walk};
+    use crate::index::Extent;
+    use crate::lookup::Found;
+
+    fn hit() -> Hit {
+        Hit {
+            found: Found {
+                entry: Id::from_bytes([1; 16]),
+                kind: "note".to_owned(),
+                extent: Extent {
+                    generation: Generation(1),
+                    records: RecordRange { first: 1, count: 1 },
+                    part: None,
+                    date: 0,
+                },
+                digest: 0,
+            },
+            preface: None,
+            text: "text".to_owned(),
+            cut: false,
+            apart: false,
+            headed: false,
+            shared_short: false,
+        }
+    }
+
+    fn rounds_for(page: u64) -> (usize, Option<u64>, bool) {
+        let mut made = 0;
+        let walked = walk(page, || {
+            made += 1;
+            Ok::<Round, ()>(Round {
+                hits: if made == 1 { vec![hit()] } else { Vec::new() },
+                apart: Vec::new(),
+                more: false,
+            })
+        })
+        .expect("a walk");
+        assert!(walked.hits.is_empty() && walked.apart.is_empty());
+        (made, walked.ended, walked.more)
+    }
+
+    #[test]
+    fn a_page_far_past_the_end_walks_no_further_than_the_lists() {
+        let (second, ended, more) = rounds_for(2);
+        assert_eq!((ended, more), (Some(1), false));
+        assert_eq!(rounds_for(1_000_000_000), (second, Some(1), false));
+        assert_eq!(second, 1);
+    }
 }

@@ -231,12 +231,12 @@ fn every_recall_adds_one_line_to_the_query_log() {
         .collect();
     assert_eq!(
         fields.iter().map(|f| (f[0], f[2])).collect::<Vec<_>>(),
-        [("q3", "hits"), ("q3", "nothing"), ("q3", "hits")]
+        [("q4", "hits"), ("q4", "nothing"), ("q4", "hits")]
     );
     assert_eq!(fields[2][4], "markdown");
     assert_eq!(fields[2][5], "-");
-    assert_eq!(fields[2][8], "-");
-    assert_eq!(fields[2][9], "heading");
+    assert_eq!(fields[2][9], "-");
+    assert_eq!(fields[2][10], "heading");
     assert_eq!(
         fs::metadata(&log).expect("the log").permissions().mode() & 0o777,
         0o600
@@ -540,4 +540,27 @@ fn in_with_a_folder_keeps_the_sessions_that_worked_there() {
         "{}",
         one.stderr
     );
+}
+
+#[test]
+fn following_more_reads_every_hit_once() {
+    let scratch = Scratch::new("recall_follow_more");
+    let lines: Vec<String> = (1..=200)
+        .map(|n| format!("line {n} about turnips grown in the east bed with some more words"))
+        .collect();
+    scratch.write("long.md", &format!("# Long\n\n{}\n", lines.join("\n")));
+    let kept = scratch.run(&["remember", &scratch.path("notes")]);
+    assert_eq!(kept.code, 0, "{}", kept.stderr);
+    let off = [("BILBO_RECALL_NOTES_BUDGET", "0")];
+    let first = scratch.run_with(&["recall", "--budget", "256", "turnips"], &off);
+    assert_eq!(first.code, 0, "{}", first.stderr);
+    let last = first.stdout.lines().last().expect("a line");
+    let command = last.strip_prefix("more: bilbo ").expect("a more line");
+    let args: Vec<&str> = command.split(' ').collect();
+    assert_eq!(args[..2], ["recall", "--page"]);
+    let second = scratch.run_with(&args, &off);
+    assert_eq!(second.code, 0, "{}", second.stderr);
+    let (one, two) = (hit_refs(&first.stdout), hit_refs(&second.stdout));
+    assert!(!one.is_empty() && !two.is_empty());
+    assert!(one.iter().all(|reference| !two.contains(reference)));
 }
