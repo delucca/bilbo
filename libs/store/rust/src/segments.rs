@@ -472,7 +472,7 @@ fn binding(layout: &Layout) -> Result<catalog::Binding, StoreError> {
     })
 }
 
-/// bilbo 0.20 shares the default root; the migration task deletes this guard.
+/// A root a person points at bilbo 0.20's holds `notes/` or `library/`, and nothing of this version goes there.
 fn refuse_older(root: &Path, shown: &Path) -> Result<(), StoreError> {
     for name in ["notes", "library"] {
         let folder = root.join(name);

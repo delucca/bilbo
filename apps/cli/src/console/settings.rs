@@ -41,8 +41,8 @@ pub const ROOT: Key<PathBuf> = Key {
         variable: Some("BILBO_HOME"),
         default: Default::Folder(Folder {
             xdg: "XDG_DATA_HOME",
-            under_xdg: "bilbo",
-            under_home: ".local/share/bilbo",
+            under_xdg: "bilbo/store",
+            under_home: ".local/share/bilbo/store",
         }),
         doc: "The store: its sealed segments.",
         ..CONFIG.about
@@ -991,7 +991,10 @@ mod tests {
     #[test]
     fn a_missing_file_is_the_defaults_unless_bilbo_config_names_it() {
         let defaults = settings(&[("HOME", "/h")], &[]).expect("defaults");
-        assert_eq!(defaults.root.value, PathBuf::from("/h/.local/share/bilbo"));
+        assert_eq!(
+            defaults.root.value,
+            PathBuf::from("/h/.local/share/bilbo/store")
+        );
         assert_eq!(defaults.root.origin, Origin::Default);
         assert_eq!(
             settings(&[("HOME", "/h"), ("BILBO_CONFIG", "/c/none.toml")], &[]).err(),
@@ -1119,7 +1122,7 @@ mod tests {
         assert_eq!(found.layout().cache, PathBuf::from("/c"));
 
         let silent = settings(&xdg, &[("/c.toml", "")]).expect("valid");
-        assert_eq!(silent.root.value, PathBuf::from("/xd/bilbo"));
+        assert_eq!(silent.root.value, PathBuf::from("/xd/bilbo/store"));
         assert_eq!(silent.state.value, PathBuf::from("/xs/bilbo"));
         assert_eq!(silent.cache.value, PathBuf::from("/xc/bilbo"));
         for folder in [&silent.root, &silent.state, &silent.cache] {

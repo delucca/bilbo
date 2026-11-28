@@ -28,7 +28,7 @@ Shows every setting: its key, its value and where the value came from. With a ke
 Standard output, one line per key, in the order [Configuration](configuration.md#keys) lists them:
 
 ```text
-paths.root = "/home/me/.local/share/bilbo" (default)
+paths.root = "/home/me/.local/share/bilbo/store" (default)
 paths.state = "/home/me/.local/state/bilbo" (default)
 paths.cache = "/home/me/.cache/bilbo" (default)
 paths.temp = "/tmp" (default)
@@ -228,7 +228,7 @@ It opens the store even when no follow claims a file, so it seals by age and reb
 
 ### The timer
 
-A timer runs `bilbo refresh` every 10 minutes. Nothing installs it yet: its files are in [`docs/reference/timer/`](timer/), with `@BILBO@` for the absolute path of `bilbo` and `@LOG@` for the log file. Until the migration, set `paths.root`, `paths.state` and `paths.cache` in the config file, since the timer sets no variable and the default folders are bilbo 0.20's (see [Configuration](configuration.md#folders)). Run these from a checkout of the bilbo repository: the unit files are in it, not in an installed bilbo.
+A timer runs `bilbo refresh` every 10 minutes. Nothing installs it yet: its files are in [`docs/reference/timer/`](timer/), with `@BILBO@` for the absolute path of `bilbo` and `@LOG@` for the log file. On a machine that still runs bilbo 0.20, set `paths.state` and `paths.cache` in the config file, since the timer sets no variable and the default state and cache folders are the ones bilbo 0.20 uses (see [Configuration](configuration.md#folders)). Run these from a checkout of the bilbo repository: the unit files are in it, not in an installed bilbo.
 
 On macOS, with launchd:
 

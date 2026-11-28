@@ -32,7 +32,7 @@ Sizes are strings with a binary unit, `KiB`, `MiB` or `GiB`, with or without the
 
 | Key | Variable | Default | Meaning |
 | --- | --- | --- | --- |
-| `paths.root` | `BILBO_HOME` | `$XDG_DATA_HOME/bilbo, else ~/.local/share/bilbo` | The store: its sealed segments. Must be an absolute path or one starting with ~/. A root that holds a `notes/` or `library/` folder, bilbo 0.20's layout, is refused. |
+| `paths.root` | `BILBO_HOME` | `$XDG_DATA_HOME/bilbo/store, else ~/.local/share/bilbo/store` | The store: its sealed segments. Must be an absolute path or one starting with ~/. A root that holds a `notes/` or `library/` folder, bilbo 0.20's layout, is refused. |
 | `paths.state` | none | `$XDG_STATE_HOME/bilbo, else ~/.local/state/bilbo` | This device's state: `open.seg`, the store lock, its store root and the query log. Must be an absolute path or one starting with ~/. |
 | `paths.cache` | none | `$XDG_CACHE_HOME/bilbo, else ~/.cache/bilbo` | What bilbo rebuilds from the store: the catalog. Must be an absolute path or one starting with ~/. |
 | `paths.temp` | none | `$TMPDIR, else /tmp` | What bilbo keeps only for a moment: the draft of `bilbo remember --edit`, in a private folder of its own. Must be an absolute path or one starting with ~/. A `TMPDIR` that is not an absolute path is passed over. |
@@ -181,7 +181,7 @@ The codes `recall.languages` takes; [Commands](commands.md#the-query) says when 
 
 The state and cache folders cannot be inside the store root.
 
-Until the migration, point `paths.root` (or `BILBO_HOME`), `paths.state` and `paths.cache` at folders of their own. The default folders are bilbo 0.20's: it keeps its notes in `notes/` and `library/` under the root and reads its config from `config` in the same folder. This version reads only `config.toml`, and refuses a root that holds either folder before it writes anything, naming the folder: `<root>/notes belongs to bilbo 0.20; set BILBO_HOME or paths.root to another folder`.
+The default store root is `store` in bilbo's data folder, `$XDG_DATA_HOME/bilbo`, else `~/.local/share/bilbo`, beside `notes`, the notes folder `bilbo setup` makes. That data folder is bilbo 0.20's root: it keeps its notes in `notes/` and `library/` there and reads its config from `config` in the same folder. This version reads only `config.toml`, keeps its segments in `store/`, and refuses a root that holds `notes/` or `library/`, as a root pointed at bilbo 0.20's does, before it writes anything, naming the folder: `<root>/notes belongs to bilbo 0.20; set BILBO_HOME or paths.root to another folder`. The default state and cache folders are the ones bilbo 0.20 uses: on a machine that still runs it, point `paths.state` and `paths.cache` at folders of their own.
 
 ## Errors
 

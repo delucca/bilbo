@@ -1,4 +1,4 @@
-paths.root                       = "/home/u/.local/share/bilbo"  [2m(default)[22m
+paths.root                       = "/home/u/.local/share/bilbo/store"  [2m(default)[22m
 paths.state                      = "/home/u/.local/state/bilbo"  [2m(default)[22m
 paths.cache                      = "/home/u/.cache/bilbo"  [2m(default)[22m
 paths.temp                       = "/tmp"  [2m(default)[22m

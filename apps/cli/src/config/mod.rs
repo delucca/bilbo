@@ -125,7 +125,7 @@ mod tests {
         };
         assert_eq!(stdout("store.seal_at"), "8 MiB\n");
         assert_eq!(stdout("store.tear_budget"), "4\n");
-        assert_eq!(stdout("paths.root"), "/h/.local/share/bilbo\n");
+        assert_eq!(stdout("paths.root"), "/h/.local/share/bilbo/store\n");
     }
 
     #[test]
