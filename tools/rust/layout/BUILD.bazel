@@ -20,6 +20,7 @@ rust_library(
         "//libs/entries/rust:__pkg__",
         "//libs/llm/rust:__pkg__",
         "//libs/search/rust:__pkg__",
+        "//libs/setup/rust:__pkg__",
     ],
     deps = all_crate_deps(normal = True),
 )

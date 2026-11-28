@@ -2,9 +2,9 @@ use std::fs;
 use std::path::PathBuf;
 
 const PLIST: &str =
-    include_str!("../../../docs/reference/timer/io.github.delucca.bilbo.remember.plist");
-const SERVICE: &str = include_str!("../../../docs/reference/timer/bilbo-remember.service");
-const TIMER: &str = include_str!("../../../docs/reference/timer/bilbo-remember.timer");
+    include_str!("../../../docs/reference/timer/io.github.delucca.bilbo.refresh.plist");
+const SERVICE: &str = include_str!("../../../docs/reference/timer/bilbo-refresh.service");
+const TIMER: &str = include_str!("../../../docs/reference/timer/bilbo-refresh.timer");
 const DERIVE_PLIST: &str =
     include_str!("../../../docs/reference/timer/io.github.delucca.bilbo.derive.plist");
 const DERIVE_SERVICE: &str = include_str!("../../../docs/reference/timer/bilbo-derive.service");
@@ -37,13 +37,29 @@ fn value_in<'a>(plist: &'a str, name: &str) -> Vec<&'a str> {
 fn the_launchd_job_runs_refresh_every_10_minutes() {
     assert_eq!(
         plist_value("Label"),
-        ["<string>io.github.delucca.bilbo.remember</string>"]
+        ["<string>io.github.delucca.bilbo.refresh</string>"]
     );
-    assert_eq!(plist_value("ProgramArguments"), ["@BILBO@", "refresh"]);
+    assert_eq!(
+        plist_value("ProgramArguments"),
+        ["/opt/bilbo/bin/bilbo", "refresh"]
+    );
     assert_eq!(plist_value("StartInterval"), ["<integer>600</integer>"]);
     assert_eq!(plist_value("RunAtLoad"), ["<false/>"]);
-    assert_eq!(plist_value("StandardErrorPath"), ["<string>@LOG@</string>"]);
-    assert_eq!(plist_value("StandardOutPath"), ["<string>@LOG@</string>"]);
+    for line in [
+        "<key>HOME</key>",
+        "<string>/home/me</string>",
+        "<string>/home/me/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>",
+    ] {
+        assert!(PLIST.lines().any(|found| found.trim() == line), "{line}");
+    }
+    assert_eq!(
+        plist_value("StandardErrorPath"),
+        ["<string>/home/me/.local/state/bilbo/timer/refresh.log</string>"]
+    );
+    assert_eq!(
+        plist_value("StandardOutPath"),
+        ["<string>/home/me/.local/state/bilbo/timer/refresh.log</string>"]
+    );
 }
 
 #[expect(
@@ -57,7 +73,7 @@ fn scratch() -> PathBuf {
 #[cfg(target_os = "macos")]
 #[test]
 fn the_launchd_job_is_a_property_list_plutil_accepts() {
-    let path = scratch().join(format!("remember-{}.plist", std::process::id()));
+    let path = scratch().join(format!("refresh-{}.plist", std::process::id()));
     fs::write(&path, PLIST).expect("write the plist");
     let output = std::process::Command::new("/usr/bin/plutil")
         .arg("-lint")
@@ -79,9 +95,11 @@ fn the_systemd_timer_starts_the_oneshot_service_every_10_minutes() {
     for line in [
         "[Service]",
         "Type=oneshot",
-        "ExecStart=\"@BILBO@\" refresh",
-        "StandardOutput=append:@LOG@",
-        "StandardError=append:@LOG@",
+        "Environment=\"HOME=/home/me\"",
+        "Environment=\"PATH=/home/me/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin\"",
+        "ExecStart=\"/opt/bilbo/bin/bilbo\" refresh",
+        "StandardOutput=append:/home/me/.local/state/bilbo/timer/refresh.log",
+        "StandardError=append:/home/me/.local/state/bilbo/timer/refresh.log",
     ] {
         assert!(service.contains(&line), "{line}");
     }
@@ -98,15 +116,22 @@ fn the_systemd_timer_starts_the_oneshot_service_every_10_minutes() {
 }
 
 #[test]
-fn the_install_steps_name_each_unit_file() {
+fn the_reference_names_each_unit_setup_writes() {
+    let section = COMMANDS
+        .split("\n## setup\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n## ").next())
+        .expect("a setup section");
     for needle in [
-        "docs/reference/timer/io.github.delucca.bilbo.remember.plist",
-        "launchctl bootstrap",
-        "docs/reference/timer/bilbo-remember.service",
-        "docs/reference/timer/bilbo-remember.timer",
-        "systemctl --user enable --now bilbo-remember.timer",
+        "bilbo setup",
+        "io.github.delucca.bilbo.refresh.plist",
+        "io.github.delucca.bilbo.derive.plist",
+        "bilbo-refresh.service",
+        "bilbo-refresh.timer",
+        "bilbo-derive.service",
+        "bilbo-derive.timer",
     ] {
-        assert!(COMMANDS.contains(needle), "{needle}");
+        assert!(section.contains(needle), "{needle}");
     }
 }
 
@@ -118,20 +143,30 @@ fn the_launchd_job_runs_a_bare_derive_every_30_minutes() {
     );
     assert_eq!(
         value_in(DERIVE_PLIST, "ProgramArguments"),
-        ["@BILBO@", "derive"]
+        ["/opt/bilbo/bin/bilbo", "derive"]
     );
     assert_eq!(
         value_in(DERIVE_PLIST, "StartInterval"),
         ["<integer>1800</integer>"]
     );
     assert_eq!(value_in(DERIVE_PLIST, "RunAtLoad"), ["<false/>"]);
+    for line in [
+        "<key>HOME</key>",
+        "<string>/home/me</string>",
+        "<string>/home/me/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>",
+    ] {
+        assert!(
+            DERIVE_PLIST.lines().any(|found| found.trim() == line),
+            "{line}"
+        );
+    }
     assert_eq!(
         value_in(DERIVE_PLIST, "StandardErrorPath"),
-        ["<string>@LOG@</string>"]
+        ["<string>/home/me/.local/state/bilbo/timer/derive.log</string>"]
     );
     assert_eq!(
         value_in(DERIVE_PLIST, "StandardOutPath"),
-        ["<string>@LOG@</string>"]
+        ["<string>/home/me/.local/state/bilbo/timer/derive.log</string>"]
     );
 }
 
@@ -160,9 +195,11 @@ fn the_systemd_timer_starts_the_derive_service_every_30_minutes() {
     for line in [
         "[Service]",
         "Type=oneshot",
-        "ExecStart=\"@BILBO@\" derive",
-        "StandardOutput=append:@LOG@",
-        "StandardError=append:@LOG@",
+        "Environment=\"HOME=/home/me\"",
+        "Environment=\"PATH=/home/me/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin\"",
+        "ExecStart=\"/opt/bilbo/bin/bilbo\" derive",
+        "StandardOutput=append:/home/me/.local/state/bilbo/timer/derive.log",
+        "StandardError=append:/home/me/.local/state/bilbo/timer/derive.log",
     ] {
         assert!(service.contains(&line), "{line}");
     }
@@ -179,7 +216,7 @@ fn the_systemd_timer_starts_the_derive_service_every_30_minutes() {
 }
 
 #[test]
-fn the_install_steps_name_each_derive_unit_file() {
+fn the_derive_timers_part_sends_the_keys_to_the_config_file() {
     let section = COMMANDS
         .split("\n## derive\n")
         .nth(1)
@@ -191,9 +228,7 @@ fn the_install_steps_name_each_derive_unit_file() {
         .and_then(|rest| rest.split("\n### ").next())
         .expect("a timer part");
     for needle in [
-        "docs/reference/timer/io.github.delucca.bilbo.derive.plist",
-        "docs/reference/timer/bilbo-derive.service",
-        "docs/reference/timer/bilbo-derive.timer",
+        "bilbo setup",
         "Set `llm.*`, `derive.*` and `paths.*` in the config file.",
     ] {
         assert!(timer.contains(needle), "{needle}");

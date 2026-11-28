@@ -16,6 +16,7 @@ bilbo_rust_test(
         "remember.rs",
         "scratch.rs",
         "sessions.rs",
+        "setup.rs",
         "tag.rs",
         "tty.rs",
     ],
@@ -33,6 +34,7 @@ bilbo_rust_test(
     size = "medium",
     version = BILBO_VERSION,
     deps = [
+        "//tools/rust/programs",
         "//tools/rust/provider",
         "@crates//:runfiles",
         "@crates//:rustix",

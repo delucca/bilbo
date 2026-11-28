@@ -68,7 +68,7 @@ impl Absolute {
 }
 
 /// `HOME`, absolute and with no `.` or `..` component.
-pub(crate) fn home(var: &dyn Fn(&str) -> Option<OsString>) -> Result<PathBuf, Error> {
+pub fn home(var: &dyn Fn(&str) -> Option<OsString>) -> Result<PathBuf, Error> {
     match var("HOME") {
         None => Err(Error::Unset("HOME")),
         Some(home) if home.is_empty() => Err(Error::Empty("HOME")),

@@ -1,6 +1,5 @@
 pub const DESCRIPTION: &str = "\
-bilbo keeps durable memory for coding agents: it remembers their sessions and
-the pages they cite, and recalls them when a later session asks.";
+bilbo keeps durable memory for coding agents: their sessions and their notes.";
 
 pub const USAGE: &str = "bilbo <verb> [<args>]";
 

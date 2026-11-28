@@ -1,0 +1,10 @@
+[Unit]
+Description=Keep what every bilbo follow gained or changed
+
+[Service]
+Type=oneshot
+Environment="HOME=/home/me"
+Environment="PATH=/home/me/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+ExecStart="/opt/bilbo/bin/bilbo" refresh
+StandardOutput=append:/home/me/.local/state/bilbo/timer/refresh.log
+StandardError=append:/home/me/.local/state/bilbo/timer/refresh.log

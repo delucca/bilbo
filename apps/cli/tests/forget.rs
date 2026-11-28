@@ -971,6 +971,7 @@ fn outcome_of(
         var: Rc::new(move |name| vars.get(name).cloned()),
         stdin: Box::new(io::empty()),
         who: Who::Nobody,
+        program: None,
         notice,
     };
     let settings = settings::load(

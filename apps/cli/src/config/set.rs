@@ -3,12 +3,11 @@ use std::path::Path;
 
 use crate::console::settings::KindKey;
 use bilbo_settings::edit::{self, Failed, Misplaced, Value};
-use bilbo_settings::key::Default;
 
 use super::{Set, unknown_key};
 use crate::console::message::{Message, sanitize};
 use crate::console::outcome::{Exit, Failure, Outcome};
-use crate::console::settings::{self, CACHE, CONFIG, Group, ROOT, STATE};
+use crate::console::settings::{self, Group, folder_variables};
 use clap::Command;
 
 const BY_HAND: &str = "set it by hand:";
@@ -43,11 +42,7 @@ impl Place<'_> {
 }
 
 fn names_a_folder(name: &str) -> bool {
-    name == "HOME"
-        || [&CONFIG, &ROOT, &STATE, &CACHE].iter().any(|key| {
-            key.about.variable == Some(name)
-                || matches!(&key.about.default, Default::Folder(folder) if folder.xdg == name)
-        })
+    folder_variables().contains(&name)
 }
 
 pub fn run(

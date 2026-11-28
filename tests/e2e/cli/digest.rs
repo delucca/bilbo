@@ -234,13 +234,17 @@ fn a_result_that_cannot_be_written_still_exits_0() {
 #[test]
 fn a_transcript_that_is_a_pipe_is_no_prompt_and_holds_nothing_up() {
     let scratch = remembered("digest_agy_pipe");
-    let fifo = scratch.path("transcript.fifo");
+    let fifo = scratch.path("transcript \"q\" \\b.fifo");
     let made = Command::new("mkfifo").arg(&fifo).status().expect("mkfifo");
     assert!(made.success());
-    let input = format!("{{\"conversationId\":\"{OTHER}\",\"transcriptPath\":\"{fifo}\"}}");
-    let began = std::time::Instant::now();
-    let run = scratch.run_with_input(&["digest", "--agy"], input.as_bytes());
-    assert!(began.elapsed() < std::time::Duration::from_secs(20));
+    let input = serde_json::json!({"conversationId": OTHER, "transcriptPath": fifo}).to_string();
+    let run = scratch.run_within(
+        &["digest", "--agy"],
+        &[],
+        None,
+        std::time::Duration::from_secs(20),
+        Some(input.as_bytes()),
+    );
     assert_eq!((run.code, run.stdout.as_str()), (0, ""));
     assert_eq!(
         run.stderr,
@@ -250,17 +254,28 @@ fn a_transcript_that_is_a_pipe_is_no_prompt_and_holds_nothing_up() {
 
 #[test]
 fn digest_agy_exits_0_whatever_it_is_given() {
-    let scratch = Scratch::new("digest_agy_exit");
-    let missing = scratch.path("missing.jsonl");
-    let named = format!("{{\"conversationId\":\"{OTHER}\",\"transcriptPath\":\"{missing}\"}}");
+    let scratch = remembered("digest_agy_exit");
+    let missing = scratch.path("missing \"q\".jsonl");
+    let named = serde_json::json!({"conversationId": OTHER, "transcriptPath": missing}).to_string();
     for (args, input) in [
         (&["digest", "--agy"][..], &b""[..]),
         (&["digest", "--agy"], b"not json"),
         (&["digest", "--agy"], named.as_bytes()),
         (&["digest", "--agy", "--frob"], b"{}"),
     ] {
-        let run = scratch.run_with_input(args, input);
+        let run = scratch.run_within(
+            args,
+            &[],
+            None,
+            std::time::Duration::from_secs(20),
+            Some(input),
+        );
         assert_eq!(run.code, 0, "{args:?}: {}", run.stderr);
         assert_eq!(run.stdout, "", "{args:?}");
+        if input == named.as_bytes() {
+            let prefix = format!("bilbo: cannot read the transcript {missing}: ");
+            assert_eq!(run.stderr.lines().count(), 1, "{}", run.stderr);
+            assert!(run.stderr.starts_with(&prefix), "{}", run.stderr);
+        }
     }
 }

@@ -48,14 +48,19 @@ fn json(name: &str) -> Value {
     serde_json::from_str(&read(name)).unwrap_or_else(|error| panic!("{name}: {error}"))
 }
 
-fn walk(base: &Path, dir: &Path, found: &mut BTreeSet<String>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
+fn walk(base: &Path, dir: &Path, found: &mut BTreeSet<String>, folders: &mut BTreeSet<String>) {
+    let entries =
+        fs::read_dir(dir).unwrap_or_else(|error| panic!("cannot read {}: {error}", dir.display()));
+    folders.insert(
+        dir.strip_prefix(base)
+            .expect("under the root")
+            .to_string_lossy()
+            .into_owned(),
+    );
     for entry in entries {
         let path = entry.expect("an entry").path();
         if path.is_dir() {
-            walk(base, &path, found);
+            walk(base, &path, found, folders);
         } else {
             let name = path.strip_prefix(base).expect("under the root");
             found.insert(name.to_string_lossy().into_owned());
@@ -84,12 +89,25 @@ fn frontmatter(text: &str) -> Vec<(String, String)> {
 fn the_plugin_holds_its_files_and_no_other() {
     let base = root();
     let mut found = BTreeSet::new();
+    let mut folders = BTreeSet::new();
     for folder in ["plugins", ".claude-plugin", ".agents/plugins"] {
-        walk(&base, &base.join(folder), &mut found);
+        walk(&base, &base.join(folder), &mut found, &mut folders);
     }
     assert_eq!(found, NINE.iter().map(|name| (*name).to_owned()).collect());
+    let standing: BTreeSet<String> = NINE
+        .iter()
+        .flat_map(|name| Path::new(name).ancestors().skip(1))
+        .map(|folder| folder.to_string_lossy().into_owned())
+        .filter(|folder| !folder.is_empty() && folder != ".agents")
+        .collect();
+    assert_eq!(folders, standing);
     let mut skills = BTreeSet::new();
-    walk(&base, &base.join("plugins/bilbo/skills"), &mut skills);
+    walk(
+        &base,
+        &base.join("plugins/bilbo/skills"),
+        &mut skills,
+        &mut BTreeSet::new(),
+    );
     let folders: BTreeSet<&str> = skills
         .iter()
         .map(|name| name.split('/').nth(3).expect("a skill's folder"))
@@ -113,14 +131,19 @@ fn both_marketplaces_name_bilbo_and_point_at_the_plugin() {
 
 #[test]
 fn claudes_manifests_set_no_version_and_codexs_sets_bilbos() {
+    fn names_a_version(value: &Value) -> bool {
+        match value {
+            Value::Object(map) => map.contains_key("version") || map.values().any(names_a_version),
+            Value::Array(items) => items.iter().any(names_a_version),
+            _ => false,
+        }
+    }
     for name in [
         ".claude-plugin/marketplace.json",
         "plugins/bilbo/.claude-plugin/plugin.json",
         "plugins/bilbo/.antigravity-plugin/plugin.json",
     ] {
-        let value = json(name);
-        assert!(value.get("version").is_none(), "{name}");
-        assert!(value["plugins"][0].get("version").is_none(), "{name}");
+        assert!(!names_a_version(&json(name)), "{name}");
     }
     assert_eq!(
         json("plugins/bilbo/.codex-plugin/plugin.json")["version"],
@@ -191,16 +214,19 @@ fn covers(entries: &[String], command: &str) -> bool {
 
 fn commands(text: &str) -> Vec<String> {
     let mut found = Vec::new();
-    let mut closing = None;
+    let mut closing = false;
     for line in text.lines() {
         let trimmed = line.trim();
-        match &closing {
-            None if trimmed == "```bash" => closing = Some(line.len() - line.trim_start().len()),
-            Some(indent) if trimmed == "```" && line.len() - line.trim_start().len() == *indent => {
-                closing = None;
-            }
-            Some(_) if !trimmed.is_empty() => found.push(trimmed.to_owned()),
-            _ => {}
+        let numbered = trimmed
+            .split_once(". ")
+            .filter(|(number, _)| !number.is_empty() && number.chars().all(|c| c.is_ascii_digit()))
+            .map_or(trimmed, |(_, rest)| rest);
+        if !closing && numbered == "```bash" {
+            closing = true;
+        } else if closing && trimmed == "```" {
+            closing = false;
+        } else if closing && !trimmed.is_empty() {
+            found.push(trimmed.to_owned());
         }
     }
     found
@@ -213,22 +239,28 @@ fn every_command_a_skill_runs_is_allowed_or_left_to_the_person() {
         let allowed = entries(&text);
         let found = commands(&text);
         assert!(!found.is_empty(), "{name}");
-        for left in ["rm x", "mv x y", "bilbo forget x"] {
-            assert!(!covers(&allowed, left), "{name}: {left}");
+        if name.contains("/note/") {
+            assert!(found.iter().any(|command| command.starts_with("rm ")));
+            assert!(
+                found
+                    .iter()
+                    .any(|command| command.starts_with("bilbo forget "))
+            );
         }
         for command in found {
             assert!(
-                !command.contains(';') && !command.contains("&&") && !command.contains(" | "),
+                !command.contains(';') && !command.contains('&') && !command.contains('|'),
                 "{name}: {command}"
             );
-            let left = command.starts_with("rm ")
-                || (command.starts_with("mv ") && !command.starts_with("mv -n "))
-                || command.starts_with("bilbo forget ");
+            let left = command.starts_with("rm ") || command.starts_with("bilbo forget ");
             if left {
                 assert!(!covers(&allowed, &command), "{name}: {command}");
             } else {
                 assert!(covers(&allowed, &command), "{name}: {command}");
             }
+        }
+        for left in ["rm x", "mv x y", "bilbo forget x"] {
+            assert!(!covers(&allowed, left), "{name}: {left}");
         }
     }
 }
@@ -313,14 +345,35 @@ fn compact_hook() -> String {
 
 static NEXT: AtomicU32 = AtomicU32::new(0);
 
-fn scratch() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "bilbo-plugin-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::SeqCst)
-    ));
-    fs::create_dir_all(&dir).expect("a scratch folder");
-    dir
+struct Folder(PathBuf);
+
+impl std::ops::Deref for Folder {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for Folder {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn scratch() -> Folder {
+    loop {
+        let dir = std::env::temp_dir().join(format!(
+            "bilbo-plugin-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::SeqCst)
+        ));
+        match fs::create_dir(&dir) {
+            Ok(()) => return Folder(dir),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => panic!("{}: {error}", dir.display()),
+        }
+    }
 }
 
 struct Ran {
@@ -420,39 +473,108 @@ fn no_manifest_names_the_hooks() {
     }
 }
 
+fn allowed(text: &str) -> Vec<String> {
+    frontmatter(text)
+        .into_iter()
+        .find(|(key, _)| key == "allowed-tools")
+        .map(|(_, value)| value)
+        .expect("allowed-tools")
+        .split(", ")
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn a_skills_allowed_tools_are_the_ones_the_plan_lists() {
+    assert_eq!(
+        allowed(&read("plugins/bilbo/skills/recall/SKILL.md")),
+        ["Bash(bilbo recall *)", "Bash(bilbo read *)"]
+    );
+    assert_eq!(
+        allowed(&read("plugins/bilbo/skills/note/SKILL.md")),
+        [
+            "Bash(bilbo config follow)",
+            "Bash(bilbo remember *)",
+            "Bash(bilbo recall *)",
+            "Bash(bilbo read *)",
+            "Bash(test -e *)",
+            "Bash(test -f *)",
+            "Bash(test -L *)",
+            "Bash(realpath *)",
+            "Bash(ls *)",
+            "Bash(mv -n *)",
+            "Read",
+            "Write",
+            "Edit"
+        ]
+    );
+}
+
 #[test]
 fn the_skills_name_the_commands_and_lines_bilbo_has() {
     let recall = read("plugins/bilbo/skills/recall/SKILL.md");
-    for needle in [
-        "bilbo recall -- '",
-        "bilbo recall --in='<value>' -- '",
-        "--page 2",
-        "bilbo read '<ref>'",
-        "`nothing matched`",
-        "`nothing on page <n>: the list ended on page <m>`",
-        "`no store at <root>`",
-        "`another bilbo is writing the store`",
-        "`--in '<value>' names no entry`",
-        "`the index is behind the store by <n> entries`",
-        "`the index cannot be compared with the store's catalog`",
-        "`--in may name fewer entries than it should`",
+    assert_eq!(
+        commands(&recall),
+        [
+            "bilbo recall -- '<words of the topic>'",
+            "bilbo recall --in='<value>' -- '<words of the topic>'",
+            "bilbo read '<ref>'",
+            "bilbo read '<id>#g<n>:r<k>' --budget <that number>",
+            "bilbo read '<the ref up to its #>'",
+            "bilbo read '<a source of the note's first line>'",
+            "bilbo recall --page 2 -- '<words of the topic>'",
+        ]
+    );
+    for text in [
+        "nothing matched",
+        "nothing on page <n>: the list ended on page <m>",
+        "no store at <root>",
+        "another bilbo is writing the store",
+        "the query was not logged: …",
+        "--in '<value>' names no entry",
+        "--in '<value>' ends the id of <n> entries: …; give one id in full",
+        "the index is behind the store by <n> entries",
+        "the index cannot be compared with the store's catalog",
+        "--in may name fewer entries than it should",
+        "left out <n> hits the store no longer gives as indexed",
         "more: ",
     ] {
-        assert!(recall.contains(needle), "recall: {needle}");
+        assert!(recall.contains(&format!("`{text}`")), "recall: {text}");
     }
     let note = read("plugins/bilbo/skills/note/SKILL.md");
-    for needle in [
-        "bilbo config follow",
-        "bilbo remember '",
-        "bilbo recall",
-        "bilbo read '",
-        "bilbo forget '",
-        "test -e '",
-        "test -L '",
-        "realpath '",
-        "mv -n '",
+    assert_eq!(
+        commands(&note),
+        [
+            "bilbo config follow",
+            "bilbo remember '<their folder>' --kind markdown --follow",
+            "realpath '<the notes folder>'",
+            "bilbo recall --in='<folder>' --kind markdown -- '<words of the subject>'",
+            "bilbo read '<that part>'",
+            "bilbo recall --page 2 --in='<folder>' --kind markdown -- '<words of the subject>'",
+            "ls -R '<folder>'",
+            "test -e '<path>'",
+            "test -L '<path>'",
+            "bilbo remember '<path>'",
+            "bilbo remember '<path>'",
+            "bilbo read '<id>'",
+            "realpath '<that folder>'",
+            "mv -n '<old path>' '<new path>'",
+            "bilbo remember '<new path>'",
+            "bilbo read '<id>'",
+            "rm '<path>'",
+            "bilbo forget '<id>'",
+            "bilbo read '<id>'",
+            "bilbo remember '<its path>'",
+            "bilbo recall --in='<its path>' --kind markdown -- '<words of the file's title>'",
+            "bilbo remember '<path>'",
+        ]
+    );
+    for text in [
         "bilbo setup",
+        "kind = \"markdown\"",
+        "bilbo forget '<its id>'",
+        "bilbo: the query was not logged: …",
     ] {
-        assert!(note.contains(needle), "note: {needle}");
+        assert!(note.contains(&format!("`{text}`")), "note: {text}");
     }
 }

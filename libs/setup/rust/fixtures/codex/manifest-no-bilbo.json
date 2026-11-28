@@ -1,0 +1,15 @@
+{
+  "name": "bilbo",
+  "interface": {
+    "displayName": "bilbo"
+  },
+  "plugins": [
+    {
+      "name": "other",
+      "source": {
+        "source": "local",
+        "path": "./plugins/other"
+      }
+    }
+  ]
+}

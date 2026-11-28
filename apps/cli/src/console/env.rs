@@ -1,5 +1,6 @@
 use std::ffi::OsString;
 use std::io::{self, Read};
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use crate::console::message::Message;
@@ -16,6 +17,7 @@ pub struct Env {
     pub var: Var,
     pub stdin: Box<dyn Read>,
     pub who: Who,
+    pub program: Option<PathBuf>,
     /// Written to stderr at once, not after the run.
     pub notice: Box<dyn FnMut(&Message)>,
 }
@@ -26,6 +28,7 @@ impl Env {
             var: Rc::new(|_| None),
             stdin: Box::new(io::empty()),
             who: Who::Nobody,
+            program: None,
             notice: Box::new(|_| {}),
         }
     }
@@ -47,5 +50,10 @@ mod tests {
         env.stdin.read_to_string(&mut text).expect("empty stdin");
         assert_eq!(text, "");
         (env.notice)(&Message::error("dropped"));
+    }
+
+    #[test]
+    fn a_quiet_env_names_no_program() {
+        assert_eq!(Env::quiet().program, None);
     }
 }

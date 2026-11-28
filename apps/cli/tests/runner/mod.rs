@@ -52,6 +52,7 @@ pub fn bilbo_with(var: Var, args: &[&str], tune: &bilbo_cli::Tune) -> Run {
         var,
         stdin: Box::new(io::empty()),
         who: Who::Nobody,
+        program: None,
         notice: Box::new(move |message| {
             sink.lock().expect("notices").extend(message.plain_lines());
         }),

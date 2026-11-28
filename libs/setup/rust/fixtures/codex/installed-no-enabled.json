@@ -1,0 +1,14 @@
+{
+  "installed": [
+    {
+      "pluginId": "bilbo@bilbo",
+      "name": "bilbo",
+      "marketplaceName": "bilbo",
+      "version": "1.2.3",
+      "source": {
+        "source": "local",
+        "path": "/world/pkg/plugins/bilbo"
+      }
+    }
+  ]
+}

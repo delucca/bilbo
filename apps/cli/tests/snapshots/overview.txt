@@ -1,5 +1,4 @@
-bilbo keeps durable memory for coding agents: it remembers their sessions and
-the pages they cite, and recalls them when a later session asks.
+bilbo keeps durable memory for coding agents: their sessions and their notes.
 
 Usage: bilbo <verb> [<args>]
 
@@ -14,6 +13,7 @@ Verbs:
   reindex   Rebuild the catalog and the search index from the store
   derive    Write notes about entries that stopped growing, with a model
   config    Show each setting, its value and where it came from
+  setup     Install the plugin and the timers on this machine
 
 Run 'bilbo <verb> --help' for its options, output and exit codes.
 Docs: https://github.com/delucca/bilbo/wiki

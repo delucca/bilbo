@@ -141,14 +141,22 @@ def recall(question, form, name, text, settings, binary=BILBO, store=STORE, scop
     done = subprocess.run([binary, "recall", *flags, "--budget", str(settings["budget"]), "--", text],
                           env=environment(name, settings, store), capture_output=True, check=False)
     seconds = time.monotonic() - began
-    stdout, stderr = done.stdout.decode(), done.stderr.decode()
+    stderr = done.stderr.decode()
     err = stderr.split("\n")[:-1] if stderr.endswith("\n") else stderr.split("\n")
     if done.returncode == 1 and err and err[-1] == "bilbo: nothing matched":
-        if stdout:
-            sys.exit(f"search: {question}/{form}: recall said nothing matched and printed {stdout[:200]!r}")
+        if done.stdout:
+            try:
+                shown = done.stdout.decode()[:200]
+            except UnicodeDecodeError:
+                shown = done.stdout[:200]
+            sys.exit(f"search: {question}/{form}: recall said nothing matched and printed {shown!r}")
         err = err[:-1]
         hits = []
     elif done.returncode == 0:
+        try:
+            stdout = done.stdout.decode()
+        except UnicodeDecodeError:
+            sys.exit(f"search: {question}/{form}: standard output is no UTF-8: {done.stdout[:200]!r}")
         hits = parse(question, form, stdout, more_line(settings["budget"], text, scope))
     else:
         sys.exit(f"search: {question}/{form}: recall exited {done.returncode}: {stderr.strip()[:500]}")
@@ -363,17 +371,29 @@ def no_match_lines():
     import os
     import tempfile
 
+    rows = (
+        ("", 1, "bilbo: nothing matched", None),
+        ("x", 1, "bilbo: nothing matched", "'x'"),
+        ("more: bilbo recall --page 2 -- q\\n", 1, "bilbo: nothing matched", "'more: bilbo recall --page 2 -- q\\n'"),
+        ("\\377", 1, "bilbo: nothing matched", "b'\\xff'"),
+        ("=== 2T6W9YB0DE#r1\\t1 line\\n\\377\\n", 0, "bilbo: searched 1 entry", "b'=== 2T6W9YB0DE#r1\\t1 line\\n\\xff\\n'"),
+    )
     with tempfile.TemporaryDirectory() as tmp:
-        for printed, stops in ((b"", False), (b"more: bilbo recall --page 2 -- q\\n", True)):
+        for printed, code, said, shown in rows:
             program = Path(tmp) / "recall.sh"
-            program.write_text("#!/bin/sh\nprintf '%b' '" + printed.decode() + "'\necho 'bilbo: nothing matched' >&2\nexit 1\n")
+            program.write_text(f"#!/bin/sh\nprintf '%b' '{printed}'\necho '{said}' >&2\nexit {code}\n")
             os.chmod(program, 0o755)
             try:
                 got = recall("q", "query", "n", "text", DEFAULTS, binary=str(program), store=Path(tmp))
-            except SystemExit:
-                got = None
-            if (got is None) != stops or (got is not None and got[0] != []):
-                print(f"lines: a no-match run that printed {printed!r} gave {got}")
+                message = None
+            except SystemExit as stop:
+                got, message = None, str(stop)
+            if shown is None:
+                if got is None or got[0] != []:
+                    print(f"lines: a no-match run that printed nothing gave {got}, {message}")
+                    return 1
+            elif got is not None or not message.startswith("search: q/query: ") or shown not in message or (shown[0] != "b" and "b'" in message):
+                print(f"lines: a run that printed {printed!r} (exit {code}) was judged {got}, {message!r}")
                 return 1
     return 0
 

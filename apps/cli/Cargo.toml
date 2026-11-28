@@ -16,6 +16,7 @@ bilbo-entries.workspace = true
 bilbo-llm.workspace = true
 bilbo-search.workspace = true
 bilbo-settings.workspace = true
+bilbo-setup.workspace = true
 bilbo-store.workspace = true
 clap.workspace = true
 rustix = { workspace = true, features = ["process"] }
@@ -23,6 +24,7 @@ serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+bilbo-programs.workspace = true
 bilbo-provider.workspace = true
 proc-macro2.workspace = true
 runfiles.workspace = true

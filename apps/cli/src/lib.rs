@@ -11,6 +11,7 @@ pub mod recall;
 pub mod refresh;
 pub mod reindex;
 pub mod remember;
+pub mod setup;
 pub mod tag;
 
 use std::ffi::OsString;
@@ -22,6 +23,14 @@ use bilbo_search::analyze::Detect;
 use bilbo_search::index::Index;
 use bilbo_search::lookup::Lookup;
 use bilbo_search::tokenizer::Tokenizer;
+use bilbo_settings::folder::{self, Folder};
+use bilbo_setup::agy::Agy;
+use bilbo_setup::claude::Claude;
+use bilbo_setup::codex::Codex;
+use bilbo_setup::launchd::Launchd;
+use bilbo_setup::program::Bounds;
+use bilbo_setup::report::Status;
+use bilbo_setup::systemd::Systemd;
 use clap::{Command, CommandFactory, Parser, Subcommand};
 
 use crate::console::args::{Parsed, parse, typed, usage, verbs, with_verbs};
@@ -60,6 +69,7 @@ pub enum Verb {
     Reindex(reindex::Args),
     Derive(derive::Args),
     Config(config::Args),
+    Setup(setup::Args),
 }
 
 /// A page that only names the kinds reads no setting.
@@ -338,12 +348,16 @@ pub fn hands<'a>(
     Ok((shelves, way))
 }
 
+fn markdown_name() -> &'static str {
+    bilbo_entries::markdown::Markdown::default().name()
+}
+
 pub fn lists<'a>(
     settings: &Settings,
     readers: &[Box<dyn Reader>],
     shows: bilbo_search::digest::Line<'a>,
 ) -> Result<Vec<digest::Shelf<'a>>, Failure> {
-    let markdown = bilbo_entries::markdown::Markdown::default().kind();
+    let markdown = markdown_name();
     let session = bilbo_entries::session::Session::default().kind();
     let shown = &settings.digest;
     readers
@@ -515,6 +529,72 @@ pub fn bilbo() -> Command {
     })
 }
 
+const SYSTEMD_UNITS: Folder = Folder {
+    xdg: "XDG_CONFIG_HOME",
+    under_xdg: "systemd/user",
+    under_home: ".config/systemd/user",
+};
+
+fn units_of(var: &Var) -> Result<std::path::PathBuf, bilbo_settings::error::Error> {
+    if cfg!(target_os = "macos") {
+        Ok(folder::home(&**var)?.join("Library/LaunchAgents"))
+    } else {
+        SYSTEMD_UNITS.locate(&**var)
+    }
+}
+
+fn platform() -> Option<(&'static str, Status)> {
+    if cfg!(target_os = "macos") {
+        Some(("launchctl", Status::Failed))
+    } else if cfg!(target_os = "linux") {
+        Some(("systemctl", Status::Skipped))
+    } else {
+        None
+    }
+}
+
+fn agent(
+    step: &'static str,
+    program: std::path::PathBuf,
+    home: Option<&std::path::Path>,
+    bounds: Bounds,
+) -> Box<dyn bilbo_setup::plugin::Agent> {
+    match step {
+        "claude" => Box::new(Claude::new(program, bounds)),
+        "codex" => match home {
+            Some(home) => Box::new(Codex::new(
+                program,
+                bounds,
+                env!("CARGO_PKG_VERSION").to_owned(),
+                home.to_string_lossy().into_owned(),
+            )),
+            None => Box::new(Codex::without_home(
+                program,
+                bounds,
+                env!("CARGO_PKG_VERSION").to_owned(),
+            )),
+        },
+        _ => Box::new(Agy::new(program, bounds)),
+    }
+}
+
+fn scheduler(
+    program: std::path::PathBuf,
+    units: std::path::PathBuf,
+    bounds: Bounds,
+) -> Box<dyn bilbo_setup::timer::Scheduler> {
+    if cfg!(target_os = "macos") {
+        Box::new(Launchd::new(
+            Some(program),
+            units,
+            rustix::process::getuid().as_raw(),
+            bounds,
+        ))
+    } else {
+        Box::new(Systemd::new(Some(program), units, bounds))
+    }
+}
+
 /// `settings` is what `main` resolved; help, the version and a usage error never read it.
 pub fn run(
     args: &[OsString],
@@ -575,6 +655,9 @@ fn dispatch(
                 && let Some(config::Sub::Set(set)) = &args.set
             {
                 return config::set::run(root, set, &*env.var, &kind_keys(), &provider_keys());
+            }
+            if let Verb::Setup(args) = &verb {
+                setup::removal_alone(root, args)?;
             }
             let settings = settings?;
             match verb {
@@ -786,6 +869,50 @@ fn dispatch(
                     derive::run(root, &args, env, &settings, &hand)
                 }
                 Verb::Config(args) => config::run(root, args, &settings),
+                Verb::Setup(args) => {
+                    let var = env.var.clone();
+                    let units = || units_of(&var);
+                    let schedule = platform().map(|(program, missing)| setup::Schedule {
+                        units: &units,
+                        program,
+                        missing,
+                    });
+                    let kind = kind_keys();
+                    let provider = provider_keys();
+                    let follow_kind = markdown_name();
+                    let saver = |folder: &std::path::Path| {
+                        let follow = bilbo_entries::follows::Follow {
+                            path: folder.to_path_buf(),
+                            kind: Some(follow_kind.to_owned()),
+                        };
+                        match remember::save::save(&settings, &follow, &|name| var(name)) {
+                            Ok(remember::save::Saved::Added {
+                                config,
+                                defaults,
+                                unsynced,
+                            }) => setup::notes::Answer::Saved {
+                                config,
+                                defaults,
+                                unsynced,
+                            },
+                            Ok(remember::save::Saved::Already(_)) => setup::notes::Answer::Already,
+                            Err(refusal) => setup::notes::Answer::Refused {
+                                reason: refusal.reason.clone(),
+                                message: refusal.message(),
+                            },
+                        }
+                    };
+                    let hand = setup::Hand {
+                        kind: follow_kind,
+                        save: &saver,
+                        schedule,
+                        kinds: &kind,
+                        providers: &provider,
+                        agent: &agent,
+                        scheduler: &scheduler,
+                    };
+                    setup::run(root, &args, env, &settings, &hand)
+                }
             }
         }
     }
@@ -1330,7 +1457,7 @@ mod tests {
             };
         assert_eq!(
             reason(&["bilbo", "help", "a\nb"]),
-            "unknown verb 'a\\nb'; the verbs are remember, refresh, recall, digest, read, tag, forget, reindex, derive, config"
+            "unknown verb 'a\\nb'; the verbs are remember, refresh, recall, digest, read, tag, forget, reindex, derive, config, setup"
         );
         assert_eq!(
             reason(&["bilbo", "help", "--a\nb"]),

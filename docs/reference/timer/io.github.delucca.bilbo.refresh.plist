@@ -2,19 +2,26 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>/home/me</string>
+		<key>PATH</key>
+		<string>/home/me/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
 	<key>Label</key>
-	<string>io.github.delucca.bilbo.remember</string>
+	<string>io.github.delucca.bilbo.refresh</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>@BILBO@</string>
+		<string>/opt/bilbo/bin/bilbo</string>
 		<string>refresh</string>
 	</array>
 	<key>RunAtLoad</key>
 	<false/>
 	<key>StandardErrorPath</key>
-	<string>@LOG@</string>
+	<string>/home/me/.local/state/bilbo/timer/refresh.log</string>
 	<key>StandardOutPath</key>
-	<string>@LOG@</string>
+	<string>/home/me/.local/state/bilbo/timer/refresh.log</string>
 	<key>StartInterval</key>
 	<integer>600</integer>
 </dict>

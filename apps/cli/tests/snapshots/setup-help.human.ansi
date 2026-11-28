@@ -1,0 +1,30 @@
+bilbo setup: install the plugin in Claude Code, Codex and AGY, and the timers.
+
+[1mUsage:[22m
+  [36mbilbo setup [--claude [39m[2m<program>[22m[36m] [--codex [39m[2m<program>[22m[36m][39m
+              [--agy [2m<program>[22m] [--notes [2m<folder>[22m] [--plugin [2m<folder>[22m]
+  [36mbilbo setup --remove [--claude [39m[2m<program>[22m[36m] [--codex [39m[2m<program>[22m[36m][39m
+              [--agy [2m<program>[22m]
+
+[1mOptions:[22m
+      [1m--claude [22m[2m<program>[22m  Claude Code's program, over setup.claude.program
+      [1m--codex [22m[2m<program>[22m   Codex's program, over setup.codex.program
+      [1m--agy [22m[2m<program>[22m     AGY's program, over setup.agy.program
+      [1m--notes [22m[2m<folder>[22m    The notes folder to make and follow, over setup.notes
+      [1m--plugin [22m[2m<folder>[22m   The folder that holds the plugin, over setup.plugin
+      [1m--remove[22m            Take the plugin and the timers out; the notes stay
+
+[1mOutput:[22m
+  [2m<step>[22m[1m [22m[2m<status>[22m[1m [22m[2m<detail>[22m   a line a step, its fields apart by tabs
+  [2m<step>[22m    notes, claude, codex, codex-hooks, agy, refresh-timer, derive-timer
+  [2m<status>[22m  installed, updated, kept, removed, absent, skipped or failed
+
+[1mExit:[22m
+  [1m0[22m  no step failed
+  [1m1[22m  a step failed; its line says why, and the same command tries it again
+  [1m2[22m  usage or config error, or a store root that is bilbo 0.20's
+
+[1mExamples:[22m
+  [36mbilbo setup --claude ~/.local/bin/claude[39m
+
+[1mDocs:[22m [2mhttps://github.com/delucca/bilbo/wiki/Commands#setup[22m

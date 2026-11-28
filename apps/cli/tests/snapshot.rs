@@ -154,7 +154,7 @@ fn a_usage_error_on_a_terminal_is_a_marked_message() {
     );
     assert_eq!(
         stderr(&["frob"], &unpainted()),
-        "■  unknown verb 'frob'; the verbs are remember, refresh, recall, digest, read, tag, forget, reindex, derive, config\n   see bilbo --help\n"
+        "■  unknown verb 'frob'; the verbs are remember, refresh, recall, digest, read, tag, forget, reindex, derive, config, setup\n   see bilbo --help\n"
     );
 }
 
@@ -287,6 +287,95 @@ fn the_forget_page_is_the_same_from_every_help_form_and_on_a_terminal() {
         include_str!("snapshots/forget-help.human.ansi")
     );
     assert_eq!(stdout(&["forget", "--help"], &unpainted()), page);
+}
+
+#[test]
+fn the_setup_page_is_the_same_from_every_help_form_and_on_a_terminal() {
+    let page = include_str!("snapshots/setup-help.txt");
+    for form in [
+        &["setup", "--help"][..],
+        &["setup", "-h"],
+        &["help", "setup"],
+        &["help", "setup", "--help"],
+    ] {
+        assert_eq!(stdout(form, &View::PLAIN), page, "{form:?}");
+    }
+    assert_eq!(
+        stdout(&["setup", "--help"], &View::HUMAN),
+        include_str!("snapshots/setup-help.human.ansi")
+    );
+    assert_eq!(stdout(&["setup", "--help"], &unpainted()), page);
+}
+
+#[test]
+fn a_report_as_setup_prints_it() {
+    use bilbo_cli::setup::view as setup_view;
+    use bilbo_setup::report::{Report, Status};
+    let mut report = Report::default();
+    for (step, status, detail) in [
+        (
+            "notes",
+            Status::Installed,
+            "made /home/me/.local/share/bilbo/notes and followed it in /home/me/.config/bilbo/config.toml, after the default follows it would replace",
+        ),
+        (
+            "claude",
+            Status::Installed,
+            "bilbo@bilbo from /opt/bilbo/share/bilbo",
+        ),
+        (
+            "codex",
+            Status::Installed,
+            "bilbo@bilbo from /opt/bilbo/share/bilbo",
+        ),
+        (
+            "codex-hooks",
+            Status::Installed,
+            "Codex trusts 2 hooks of bilbo@bilbo",
+        ),
+        (
+            "agy",
+            Status::Installed,
+            "bilbo from /opt/bilbo/share/bilbo",
+        ),
+        (
+            "refresh-timer",
+            Status::Installed,
+            "every 10m, log /home/me/.local/state/bilbo/timer/refresh.log",
+        ),
+        (
+            "derive-timer",
+            Status::Installed,
+            "every 30m, log /home/me/.local/state/bilbo/timer/derive.log; derive.enabled is false in the config and the unit",
+        ),
+    ] {
+        report.push(step, status, detail.to_owned());
+    }
+    assert_eq!(
+        setup_view::rows(&report, &View::PLAIN),
+        include_str!("snapshots/setup-output.txt")
+    );
+}
+
+#[test]
+fn a_removals_rows_as_setup_prints_them() {
+    use bilbo_cli::setup::view as setup_view;
+    use bilbo_setup::report::{Report, Status};
+    let mut report = Report::default();
+    for (step, detail) in [
+        ("claude", "bilbo@bilbo and the marketplace bilbo"),
+        ("codex-hooks", "2 trust entries of bilbo@bilbo"),
+        ("codex", "bilbo@bilbo and the marketplace bilbo"),
+        ("agy", "bilbo"),
+        ("refresh-timer", "bilbo-refresh.timer"),
+        ("derive-timer", "bilbo-derive.timer"),
+    ] {
+        report.push(step, Status::Removed, detail.to_owned());
+    }
+    assert_eq!(
+        setup_view::rows(&report, &View::PLAIN),
+        include_str!("snapshots/setup-remove.txt")
+    );
 }
 
 #[test]

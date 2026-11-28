@@ -3,6 +3,8 @@ Description=Write notes about the entries bilbo keeps
 
 [Service]
 Type=oneshot
-ExecStart="@BILBO@" derive
-StandardOutput=append:@LOG@
-StandardError=append:@LOG@
+Environment="HOME=/home/me"
+Environment="PATH=/home/me/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+ExecStart="/opt/bilbo/bin/bilbo" derive
+StandardOutput=append:/home/me/.local/state/bilbo/timer/derive.log
+StandardError=append:/home/me/.local/state/bilbo/timer/derive.log

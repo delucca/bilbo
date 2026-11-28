@@ -26,6 +26,7 @@ rust_library(
         "//libs/llm:rust",
         "//libs/search:rust",
         "//libs/settings:rust",
+        "//libs/setup:rust",
         "//libs/store:rust",
     ] + all_crate_deps(normal = True),
 )
@@ -89,6 +90,7 @@ bilbo_rust_test(
         "//libs/entries:rust",
         "//libs/llm:rust",
         "//libs/search:rust",
+        "//libs/setup:rust",
         "//libs/store:rust",
     ],
 )
@@ -119,6 +121,22 @@ bilbo_rust_test(
         "tests/scratch/mod.rs",
     ],
     crate_root = "tests/config.rs",
+    layer = "integration",
+    lint_config = ":lints",
+    deps = [
+        ":bilbo_cli",
+        "//libs/settings:rust",
+        "//libs/store:rust",
+    ] + all_crate_deps(normal_dev = True),
+)
+
+bilbo_rust_test(
+    name = "setup",
+    srcs = [
+        "tests/scratch/mod.rs",
+        "tests/setup.rs",
+    ],
+    crate_root = "tests/setup.rs",
     layer = "integration",
     lint_config = ":lints",
     deps = [
@@ -340,10 +358,10 @@ bilbo_rust_test(
         "//:docs/reference/commands.md",
         "//:docs/reference/timer/bilbo-derive.service",
         "//:docs/reference/timer/bilbo-derive.timer",
-        "//:docs/reference/timer/bilbo-remember.service",
-        "//:docs/reference/timer/bilbo-remember.timer",
+        "//:docs/reference/timer/bilbo-refresh.service",
+        "//:docs/reference/timer/bilbo-refresh.timer",
         "//:docs/reference/timer/io.github.delucca.bilbo.derive.plist",
-        "//:docs/reference/timer/io.github.delucca.bilbo.remember.plist",
+        "//:docs/reference/timer/io.github.delucca.bilbo.refresh.plist",
     ],
     layer = "integration",
     lint_config = ":lints",

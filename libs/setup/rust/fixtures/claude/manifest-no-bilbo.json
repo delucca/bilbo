@@ -1,0 +1,12 @@
+{
+  "name": "bilbo",
+  "owner": {
+    "name": "somebody"
+  },
+  "plugins": [
+    {
+      "name": "other",
+      "source": "./plugins/other"
+    }
+  ]
+}

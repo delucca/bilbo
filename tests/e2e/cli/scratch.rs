@@ -125,14 +125,23 @@ impl Scratch {
         extra: &[(&str, &str)],
         folder: Option<&Path>,
         limit: Duration,
+        input: Option<&[u8]>,
     ) -> Run {
+        let stdin = input.map_or_else(Stdio::null, |bytes| {
+            let path = self
+                .dir
+                .join(format!("stdin-{}", COUNTER.fetch_add(1, Ordering::Relaxed)));
+            fs::write(&path, bytes).expect("the input is written");
+            assert_eq!(fs::read(&path).expect("the input is read back"), bytes);
+            Stdio::from(fs::File::open(&path).expect("the input opens"))
+        });
         let mut command = Command::new(fs::canonicalize(binary()).expect("the binary"));
         command
             .env_clear()
             .envs(self.env())
             .envs(extra.iter().copied())
             .args(args)
-            .stdin(Stdio::null())
+            .stdin(stdin)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         if let Some(folder) = folder {

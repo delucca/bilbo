@@ -55,6 +55,7 @@ pub fn run_as(
         var: std::rc::Rc::new(move |name| vars.get(name).cloned()),
         stdin: input,
         who,
+        program: None,
         notice: Box::new(move |message| {
             let lines = message.plain_lines();
             if let Some(notices) = &notices {

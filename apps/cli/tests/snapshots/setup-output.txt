@@ -1,0 +1,7 @@
+notes	installed	made /home/me/.local/share/bilbo/notes and followed it in /home/me/.config/bilbo/config.toml, after the default follows it would replace
+claude	installed	bilbo@bilbo from /opt/bilbo/share/bilbo
+codex	installed	bilbo@bilbo from /opt/bilbo/share/bilbo
+codex-hooks	installed	Codex trusts 2 hooks of bilbo@bilbo
+agy	installed	bilbo from /opt/bilbo/share/bilbo
+refresh-timer	installed	every 10m, log /home/me/.local/state/bilbo/timer/refresh.log
+derive-timer	installed	every 30m, log /home/me/.local/state/bilbo/timer/derive.log; derive.enabled is false in the config and the unit

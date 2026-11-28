@@ -472,7 +472,7 @@ fn binding(layout: &Layout) -> Result<catalog::Binding, StoreError> {
     })
 }
 
-/// A root a person points at bilbo 0.20's holds `notes/` or `library/`, and nothing of this version goes there.
+/// A bilbo 0.20 data folder must not be used as the store root.
 fn refuse_older(root: &Path, shown: &Path) -> Result<(), StoreError> {
     for name in ["notes", "library"] {
         let folder = root.join(name);
@@ -504,18 +504,9 @@ fn guarded_root(configured: &Layout) -> Result<PathBuf, StoreError> {
 /// would make the root hold more than segments. Compared lexically and with every link followed,
 /// a dangling one included, so a link cannot hide the nesting.
 fn refuse_inside(configured: &Layout, root: &Path) -> Result<(), StoreError> {
-    let roots = [
-        lexical(&configured.root),
-        root.to_path_buf(),
-        files::follow(&configured.root)?,
-    ];
+    let roots = root_forms(configured, root)?;
     for (folder, path) in [("state", &configured.state), ("cache", &configured.cache)] {
-        let lexical = lexical(path);
-        let followed = files::follow(&lexical)?;
-        if roots
-            .iter()
-            .any(|inside| lexical.starts_with(inside) || followed.starts_with(inside))
-        {
+        if inside(&roots, path)? {
             return Err(StoreError::Inside {
                 folder,
                 path: path.clone(),
@@ -524,6 +515,22 @@ fn refuse_inside(configured: &Layout, root: &Path) -> Result<(), StoreError> {
         }
     }
     Ok(())
+}
+
+fn root_forms(configured: &Layout, root: &Path) -> Result<[PathBuf; 3], StoreError> {
+    Ok([
+        lexical(&configured.root),
+        root.to_path_buf(),
+        files::follow(&configured.root)?,
+    ])
+}
+
+fn inside(roots: &[PathBuf; 3], path: &Path) -> Result<bool, StoreError> {
+    let lexical = lexical(path);
+    let followed = files::follow(&lexical)?;
+    Ok(roots
+        .iter()
+        .any(|root| lexical.starts_with(root) || followed.starts_with(root)))
 }
 
 /// `path` without `.` and without the components `..` cancels.
@@ -1039,6 +1046,11 @@ impl Store {
     /// keep still reports a root it must not use. Creates nothing.
     pub fn check(layout: &Layout) -> Result<(), StoreError> {
         guarded_root(layout).map(|_| ())
+    }
+
+    pub fn is_inside_root(configured: &Layout, path: &Path) -> Result<bool, StoreError> {
+        let root = files::resolve(&configured.root)?;
+        inside(&root_forms(configured, &root)?, path)
     }
 
     pub fn open(

@@ -1,6 +1,7 @@
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
@@ -1858,4 +1859,50 @@ fn a_store_opened_from_what_was_checked_is_the_one_that_was_checked() {
         .metadata()
         .expect("the folder's metadata");
     assert_eq!((kept.dev(), kept.ino()), (held.dev(), held.ino()));
+}
+
+#[test]
+fn a_path_is_inside_the_root_as_written_or_through_a_link() {
+    let scratch = Scratch::new("path_inside_root");
+    let base = scratch.layout().root.with_file_name("path-inside");
+    let root = base.join("root");
+    fs::create_dir_all(root.join("sub")).expect("root");
+    fs::create_dir_all(base.join("beside")).expect("a folder beside the root");
+    let layout = Layout {
+        root: root.clone(),
+        state: base.join("state"),
+        cache: base.join("cache"),
+    };
+    let to_root = base.join("to-root");
+    std::os::unix::fs::symlink(&root, &to_root).expect("a link to the root");
+    let to_sub = base.join("to-sub");
+    std::os::unix::fs::symlink(root.join("sub"), &to_sub).expect("a link inside the root");
+    let cases: Vec<(&str, PathBuf, bool)> = vec![
+        ("the root itself", root.clone(), true),
+        ("a folder under the root", root.join("notes"), true),
+        ("a link to the root", to_root.clone(), true),
+        (
+            "a folder not there yet under that link",
+            to_root.join("notes").join("deeper"),
+            true,
+        ),
+        (
+            "a folder under a link to a folder inside the root",
+            to_sub.join("notes"),
+            true,
+        ),
+        ("a folder beside the root", base.join("beside"), false),
+        (
+            "a folder not there yet beside the root",
+            base.join("later"),
+            false,
+        ),
+    ];
+    for (name, path, expected) in cases {
+        match Store::is_inside_root(&layout, &path) {
+            Ok(found) => assert_eq!(found, expected, "{name}"),
+            Err(error) => panic!("{name}: {error:?}"),
+        }
+    }
+    assert!(!base.join("later").exists(), "nothing was made");
 }

@@ -1,0 +1,10 @@
+[package]
+name = "bilbo-programs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Stand-ins for the programs bilbo setup starts, for tests: /bin/sh scripts that keep their state and a log in a folder."
+
+[lints]
+workspace = true

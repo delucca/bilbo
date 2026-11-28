@@ -1,0 +1,14 @@
+[
+  {
+    "id": "cc-plugin-privacy@builtin",
+    "version": "unknown",
+    "scope": "user",
+    "enabled": true
+  },
+  {
+    "id": "cc-plugin-sec-default@builtin",
+    "version": "unknown",
+    "scope": "managed",
+    "enabled": true
+  }
+]

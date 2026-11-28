@@ -1,0 +1,12 @@
+{
+  "marketplaces": [
+    {
+      "name": "bilbo",
+      "root": "/world/pkg",
+      "marketplaceSource": {
+        "sourceType": "local",
+        "source": "/world/pkg"
+      }
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+claude	removed	bilbo@bilbo and the marketplace bilbo
+codex-hooks	removed	2 trust entries of bilbo@bilbo
+codex	removed	bilbo@bilbo and the marketplace bilbo
+agy	removed	bilbo
+refresh-timer	removed	bilbo-refresh.timer
+derive-timer	removed	bilbo-derive.timer

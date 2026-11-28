@@ -1,0 +1,10 @@
+[
+  {
+    "id": "bilbo@bilbo",
+    "version": "unknown",
+    "scope": "user",
+    "enabled": "true",
+    "installPath": "/world/home/.claude/plugins/cache/bilbo/bilbo/unknown",
+    "readFromFolder": "/world/pkg/plugins/bilbo"
+  }
+]

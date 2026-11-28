@@ -1,0 +1,8 @@
+[
+  {
+    "name": "bilbo",
+    "source": "github",
+    "installLocation": "/world/cache",
+    "repo": "somebody/bilbo"
+  }
+]

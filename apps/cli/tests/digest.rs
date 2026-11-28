@@ -974,6 +974,7 @@ fn direct_through(
         var: std::rc::Rc::new(move |name| vars.get(name).cloned()),
         stdin: Box::new(io::Cursor::new(hook(session, PROMPT))),
         who: Who::Nobody,
+        program: None,
         notice: Box::new(move |message| {
             if let Ok(mut notices) = sink.lock() {
                 notices.extend(message.plain_lines());
@@ -1648,6 +1649,7 @@ fn a_log_that_cannot_be_written_changes_no_row() {
         var: std::rc::Rc::new(move |name| vars.get(name).cloned()),
         stdin: Box::new(io::Cursor::new(hook(&fresh(), PROMPT))),
         who: Who::Nobody,
+        program: None,
         notice: Box::new(|_| {}),
     };
     let outcome = bilbo_cli::run(
@@ -2386,6 +2388,14 @@ fn a_call_that_starts_no_turn_opens_no_state_folder_and_logs_nothing() {
     assert!(!sandbox.dir.join("state").exists());
     assert!(!sandbox.log_file().exists());
     assert!(!sandbox.dir.join("store").exists());
+    let huge = sandbox.digest_agy(&agy_input(&fresh(), "/nowhere/t.jsonl", Some("1e999")));
+    assert_eq!(
+        (huge.code, huge.stdout, huge.stderr, huge.notices),
+        (0, String::new(), Vec::<String>::new(), Vec::<String>::new())
+    );
+    assert!(!sandbox.dir.join("state").exists());
+    assert!(!sandbox.log_file().exists());
+    assert!(!sandbox.dir.join("store").exists());
 }
 
 #[test]
@@ -2397,10 +2407,9 @@ fn only_the_end_of_a_regular_transcript_is_read() {
     let limit = 1024u64;
     sandbox.write("short.jsonl", user_step("short one").as_bytes());
     let path = sandbox.path("short.jsonl");
-    assert_eq!(
-        tail(&path, limit).expect("a short file"),
-        user_step("short one").into_bytes()
-    );
+    let short = tail(&path, limit).expect("a short file");
+    assert_eq!(short.bytes, user_step("short one").into_bytes());
+    assert!(short.from_start);
     let filler = format!(
         "{{\"type\":\"SYSTEM_MESSAGE\",\"content\":\"{}\"}}\n",
         "x".repeat(200)
@@ -2409,8 +2418,9 @@ fn only_the_end_of_a_regular_transcript_is_read() {
     assert!(long.len() as u64 > 3 * limit);
     sandbox.write("long.jsonl", long.as_bytes());
     let path = sandbox.path("long.jsonl");
-    let bytes = tail(&path, limit).expect("the end");
-    assert_eq!(bytes, long.as_bytes()[long.len() - 1024..]);
+    let end = tail(&path, limit).expect("the end");
+    assert_eq!(end.bytes, long.as_bytes()[long.len() - 1024..]);
+    assert!(!end.from_start);
     let input = agy_input("c", &path, None);
     let heard = read_agy(&mut &input[..], 4096, &|path| tail(path, limit));
     assert_eq!(heard, Err(Refused::NoUserInput("c".to_owned())));
@@ -2418,6 +2428,22 @@ fn only_the_end_of_a_regular_transcript_is_read() {
     sandbox.write("near.jsonl", nearer.as_bytes());
     let input = agy_input("c", &sandbox.path("near.jsonl"), None);
     let heard = read_agy(&mut &input[..], 4096, &|path| tail(path, limit));
+    assert_eq!(heard.map(|heard| matches!(heard, Heard::Turn(_))), Ok(true));
+    let one_line = format!("{}{}", " ".repeat(2048), user_step("cut by the limit"));
+    sandbox.write("one-line.jsonl", one_line.as_bytes());
+    let input = agy_input("c", &sandbox.path("one-line.jsonl"), None);
+    let heard = read_agy(&mut &input[..], 4096, &|path| tail(path, limit));
+    assert_eq!(heard, Err(Refused::NoUserInput("c".to_owned())));
+    let last = user_step("exactly the limit");
+    sandbox.write(
+        "exact.jsonl",
+        format!("{}{last}", filler.repeat(15)).as_bytes(),
+    );
+    let input = agy_input("c", &sandbox.path("exact.jsonl"), None);
+    let exact = last.len() as u64;
+    let heard = read_agy(&mut &input[..], 4096, &|path| tail(path, exact));
+    assert_eq!(heard, Err(Refused::NoUserInput("c".to_owned())));
+    let heard = read_agy(&mut &input[..], 4096, &|path| tail(path, exact + 1));
     assert_eq!(heard.map(|heard| matches!(heard, Heard::Turn(_))), Ok(true));
     assert_eq!(tail(&sandbox.path("notes"), limit), Err(Unread::NotRegular));
     let missing = sandbox.path("missing.jsonl");
@@ -2439,4 +2465,53 @@ fn an_agy_conversation_is_marked_and_matched_as_a_session_is() {
     assert!(!run.stdout.contains("sessions: "), "{}", run.stdout);
     let again = sandbox.digest_agy(&agy_input(CLAUDE, &transcript, None));
     assert_eq!(again.stdout, "");
+    let plain = sandbox.digest(CLAUDE, PROMPT);
+    assert_eq!(
+        (plain.code, plain.stdout, plain.stderr),
+        (0, String::new(), Vec::<String>::new())
+    );
+    let last = sandbox.log().pop().expect("a line");
+    assert_eq!((last[2].as_str(), last[3].as_str()), ("later", CLAUDE));
+}
+
+#[test]
+fn digest_without_the_option_prints_and_logs_what_it_did() {
+    let sandbox = Sandbox::new("digest_numbers");
+    sandbox.files();
+    let (one, three, four) = (fresh(), fresh(), fresh());
+    let inputs = [
+        format!(r#"{{"session_id":"{one}","prompt":1e999}}"#),
+        r#"{"session_id":1e999,"prompt":"carrots north"}"#.to_owned(),
+        format!(r#"{{"session_id":1e999,"session_id":"{three}"}}"#),
+        format!(r#"{{"session_id":"{four}","prompt":1e999,"prompt":"zzqqxx"}}"#),
+    ];
+    let said = [
+        Some("bilbo: the hook's input has no prompt"),
+        Some("bilbo: the hook's input has no session_id"),
+        Some("bilbo: the hook's input has no prompt"),
+        None,
+    ];
+    for (input, said) in inputs.iter().zip(said) {
+        let run = sandbox::run(sandbox.vars(), &["digest"], input.as_bytes(), None);
+        assert_eq!((run.code, run.stdout.as_str()), (0, ""), "{input}");
+        let wanted: Vec<String> = said.map(str::to_owned).into_iter().collect();
+        assert_eq!(run.stderr, wanted, "{input}");
+    }
+    let log = sandbox.log();
+    let seen: Vec<(&str, &str)> = log
+        .iter()
+        .map(|line| (line[2].as_str(), line[3].as_str()))
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            ("input", one.as_str()),
+            ("input", "-"),
+            ("input", three.as_str()),
+            ("nothing", four.as_str())
+        ]
+    );
+    let marks = String::from_utf8(sandbox.marks()).expect("text");
+    assert!(marks.contains(&four));
+    assert!(!marks.contains(&one) && !marks.contains(&three));
 }

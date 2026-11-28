@@ -1,0 +1,30 @@
+bilbo setup: install the plugin in Claude Code, Codex and AGY, and the timers.
+
+Usage:
+  bilbo setup [--claude <program>] [--codex <program>]
+              [--agy <program>] [--notes <folder>] [--plugin <folder>]
+  bilbo setup --remove [--claude <program>] [--codex <program>]
+              [--agy <program>]
+
+Options:
+      --claude <program>  Claude Code's program, over setup.claude.program
+      --codex <program>   Codex's program, over setup.codex.program
+      --agy <program>     AGY's program, over setup.agy.program
+      --notes <folder>    The notes folder to make and follow, over setup.notes
+      --plugin <folder>   The folder that holds the plugin, over setup.plugin
+      --remove            Take the plugin and the timers out; the notes stay
+
+Output:
+  <step> <status> <detail>   a line a step, its fields apart by tabs
+  <step>    notes, claude, codex, codex-hooks, agy, refresh-timer, derive-timer
+  <status>  installed, updated, kept, removed, absent, skipped or failed
+
+Exit:
+  0  no step failed
+  1  a step failed; its line says why, and the same command tries it again
+  2  usage or config error, or a store root that is bilbo 0.20's
+
+Examples:
+  bilbo setup --claude ~/.local/bin/claude
+
+Docs: https://github.com/delucca/bilbo/wiki/Commands#setup

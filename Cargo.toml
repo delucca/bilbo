@@ -8,8 +8,10 @@ members = [
     "libs/llm/rust",
     "libs/search/rust",
     "libs/settings/rust",
+    "libs/setup/rust",
     "libs/store/rust",
     "tools/rust/layout",
+    "tools/rust/programs",
     "tools/rust/provider",
 ]
 
@@ -25,9 +27,11 @@ bilbo-entries = { path = "libs/entries/rust" }
 bilbo-language = { path = "libs/language/rust" }
 bilbo-layout = { path = "tools/rust/layout" }
 bilbo-llm = { path = "libs/llm/rust" }
+bilbo-programs = { path = "tools/rust/programs" }
 bilbo-provider = { path = "tools/rust/provider" }
 bilbo-search = { path = "libs/search/rust" }
 bilbo-settings = { path = "libs/settings/rust" }
+bilbo-setup = { path = "libs/setup/rust" }
 bilbo-store = { path = "libs/store/rust" }
 clap = { version = "4.6.7", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
 frostem = { version = "2.20261016.2", default-features = false, features = ["english"] }

@@ -1,0 +1,15 @@
+[
+  {
+    "name": "bilbo",
+    "enabled": true,
+    "source": "antigravity",
+    "path": "/world/copy",
+    "skills": [
+      "note",
+      "recall"
+    ],
+    "hooks": [
+      "bilbo-digest"
+    ]
+  }
+]

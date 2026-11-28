@@ -27,6 +27,7 @@ fn bilbo(vars: HashMap<String, OsString>, args: &[&str]) -> Run {
         var: std::rc::Rc::new(move |name| vars.get(name).cloned()),
         stdin: Box::new(io::empty()),
         who: Who::Nobody,
+        program: None,
         notice: Box::new(move |message| {
             sink.lock().expect("notices").extend(message.plain_lines());
         }),

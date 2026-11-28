@@ -46,7 +46,7 @@ The value is TOML, as the config file would hold it. The origin is `default`, th
 
 `bilbo config store.seal_at` prints `16 MiB`: a string without its quotes, any other value as TOML. A key bilbo does not know is a usage error.
 
-A config file or variable that bilbo refuses fails `bilbo config` as it fails every other verb, with the same message, except the 0.20-root refusal and the refusal of a state or cache folder inside the store root, which a verb runs when it opens the store, and `bilbo digest` when it checks the store's folders before that (`the state folder <path> is inside the store root <root>, which holds only segments; set paths.state to a folder outside the root`). `bilbo config` runs neither. So `bilbo config` checks a file you edited.
+A config file or variable that bilbo refuses fails `bilbo config` as it fails every other verb, with the same message, except the 0.20-root refusal and the refusal of a state or cache folder inside the store root, which a verb runs when it opens the store, and `bilbo digest` when it checks the store's folders before that, and `bilbo setup`, though not `bilbo setup --remove`, before it writes anything (`the state folder <path> is inside the store root <root>, which holds only segments; set paths.state to a folder outside the root`). `bilbo config` runs neither. So `bilbo config` checks a file you edited.
 
 ### set
 
@@ -228,30 +228,9 @@ It opens the store even when no follow claims a file, so it seals by age and reb
 
 ### The timer
 
-A timer runs `bilbo refresh` every 10 minutes. Nothing installs it yet: its files are in [`docs/reference/timer/`](timer/), with `@BILBO@` for the absolute path of `bilbo` and `@LOG@` for the log file. On a machine that still runs bilbo 0.20, set `paths.state` and `paths.cache` in the config file, since the timer sets no variable and the default state and cache folders are the ones bilbo 0.20 uses (see [Configuration](configuration.md#folders)). Run these from a checkout of the bilbo repository: the unit files are in it, not in an installed bilbo.
+Once [`bilbo setup`](#setup) has installed it, a timer runs `bilbo refresh` every `setup.refresh.every`, which is 10 minutes unless you set it. [The timers](#the-timers) says what its unit holds: this bilbo's own path, the folder variables setup saw, a `PATH` and no other variable, and its log. The default state and cache folders are the ones bilbo 0.20 uses: on a machine that still runs it, set `paths.state` and `paths.cache` in the config file (see [Configuration](configuration.md#folders)).
 
-On macOS, with launchd:
-
-```sh
-mkdir -p ~/Library/LaunchAgents ~/Library/Logs
-sed -e "s|@BILBO@|$(command -v bilbo)|" -e "s|@LOG@|$HOME/Library/Logs/bilbo-remember.log|" \
-  docs/reference/timer/io.github.delucca.bilbo.remember.plist \
-  > ~/Library/LaunchAgents/io.github.delucca.bilbo.remember.plist
-launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/io.github.delucca.bilbo.remember.plist
-```
-
-On Linux, with systemd:
-
-```sh
-mkdir -p ~/.config/systemd/user ~/.cache
-sed -e "s|@BILBO@|$(command -v bilbo)|" -e "s|@LOG@|$HOME/.cache/bilbo-remember.log|" \
-  docs/reference/timer/bilbo-remember.service > ~/.config/systemd/user/bilbo-remember.service
-cp docs/reference/timer/bilbo-remember.timer ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now bilbo-remember.timer
-```
-
-The timer is what keeps a session as it grows: a turn is kept and indexed by the next run after it is written, at most 10 minutes later while runs are short. The 10 minutes are the interval between the timer's starts, not a bound: a run that rebuilds the index takes minutes, and a failing or suspended run takes longer. Without a timer, what the follows gained is kept only when `bilbo refresh` is run by hand, or `bilbo remember <target>` for one file or folder.
+The timer is what keeps a session as it grows: a turn is kept and indexed by the next run after it is written, at most one interval later while runs are short. The interval is the time between the timer's starts, not a bound: a run that rebuilds the index takes minutes, and a failing or suspended run takes longer. Without a timer, what the follows gained is kept only when `bilbo refresh` is run by hand, or `bilbo remember <target>` for one file or folder.
 
 ### Output
 
@@ -339,7 +318,7 @@ A passed-over hit uses no budget, and the next one is tried. stderr says how man
 
 ### Pages
 
-`--page <n>` prints page `n` of the answer, a whole number from 1 to 18446744073709551615; without it, page 1. A page is what `n` runs in a row would print with one memory of what was shown: each page packs the chunks into their room and the notes into theirs, each list going on where its page before stopped, and the copy rules and the record cap count every earlier page ([Copies and long records](#copies-and-long-records)). A hit that was cut counts as shown: the next page goes on after it, and `bilbo read <ref>` prints it whole. A hit that had no room at the end of a page leads the next one. A list ends, for every page, at a hit that a page's whole room cannot show, as page 1's list does: a note whose source line alone is longer than the notes' room. With `recall.notes_budget` at 0 the notes have no pages. A run stops walking when both lists have ended, so a page far past the end costs what the page after the last costs.
+`--page <n>` prints page `n` of the answer, a whole number from 1 to 18,446,744,073,709,551,615; without it, page 1. A page is what `n` runs in a row would print with one memory of what was shown: each page packs the chunks into their room and the notes into theirs, each list going on where its page before stopped, and the copy rules and the record cap count every earlier page ([Copies and long records](#copies-and-long-records)). A hit that was cut counts as shown: the next page goes on after it, and `bilbo read <ref>` prints it whole. A hit that had no room at the end of a page leads the next one. A list ends, for every page, at a hit that a page's whole room cannot show, as page 1's list does: a note whose source line alone is longer than the notes' room. With `recall.notes_budget` at 0 the notes have no pages. A run stops walking when both lists have ended, so a page far past the end costs what the page after the last costs.
 
 A page that shows a hit, and after which a list has not ended, ends with one more line: `more: ` and the command that prints the next page, with the `--in` values, the kinds and the `--budget` the run was given.
 
@@ -397,7 +376,7 @@ Off a terminal every line bilbo writes starts with `bilbo: `. On a run that sear
 |---|---|
 | 0 | at least one hit |
 | 1 | nothing matched, a page after the last, there is no store, no search index or none that bilbo can read, the store is being written for longer than `store.wait`, or the store or the index could not be read |
-| 2 | usage or config error: no query, an unknown kind, an `--in` value with no letter or digit, a `--budget` outside 256 to 1,000,000, a `--page` that is no whole number from 1 to 18446744073709551615, a store root that holds bilbo 0.20's `notes/` or `library/`, or a state or cache folder inside the root |
+| 2 | usage or config error: no query, an unknown kind, an `--in` value with no letter or digit, a `--budget` outside 256 to 1,000,000, a `--page` that is no whole number from 1 to 18,446,744,073,709,551,615, a store root that holds bilbo 0.20's `notes/` or `library/`, or a state or cache folder inside the root |
 
 ## digest
 
@@ -821,7 +800,7 @@ With the second the model that answered can differ from the one named; the log h
 
 By `tool`, `anthropic` is the tool claude, with its own login and no key: `[llm.anthropic.tool]` holds `program`, `effort`, `arguments`, `inherit`, `environment` and `project_files`. bilbo runs the tool with no tool the model can call, and does not start it otherwise: `llm.anthropic.tool.arguments` is read as flags bilbo knows, each with its values: `-p`, `--model`, `--effort`, `--output-format`, `--tools`, `--disable-slash-commands`, `--strict-mcp-config`, `--setting-sources`, `--settings`, `--no-session-persistence`, `--safe-mode`, `--system-prompt`, `--append-system-prompt`, `--fallback-model` and `--max-budget-usd`. Any other item is refused, and so is a flag written with `=`. The list must hold `--tools` followed by `""`, `--strict-mcp-config` and `--safe-mode`, and `{instruction}` only as the value of `--system-prompt` or `--append-system-prompt`. A flag of a later version of the tool waits for bilbo to know it. Two things no argument rules: what `llm.anthropic.tool.environment` or a settings value makes the tool do, and the hooks of the machine's managed settings, which the tool runs with the prompt whatever its arguments are. A reply that shows a tool was reached is a failed call: more than one turn, a denied permission, or a count above 0 of a server tool or of a subagent. A reply without one of the fields bilbo reads for that is a failed call too, and charges nothing: bilbo reads the reply as claude 2.1.327 prints it, and the run names the field. The list must also hold `--no-session-persistence`: without it the tool would save every call as a session under `~/.claude/projects`, which `bilbo refresh` follows by default.
 
-The tool runs in an empty folder of bilbo's state folder, `<state>/derive/work`, with only the variables `llm.anthropic.tool.inherit` names: its own login is found through `HOME`, and nothing of the caller's session reaches it. bilbo does not start it when a folder above that one holds a file the tool reads as a project's (`llm.anthropic.tool.project_files`): set `paths.state` outside any project. `DISABLE_PROMPT_CACHING` is set because the tool would otherwise pay to cache a prompt it never sends twice. bilbo stops the tool at `llm.timeout`, with what it started in its process group; a process that starts a session of its own is not stopped. A tool may make more than one request of its own for one call; with no tool on offer it makes one. A timer's run has no shell environment: give `llm.anthropic.tool.program` its full path.
+The tool runs in an empty folder of bilbo's state folder, `<state>/derive/work`, with only the variables `llm.anthropic.tool.inherit` names: its own login is found through `HOME`, and nothing of the caller's session reaches it. bilbo does not start it when a folder above that one holds a file the tool reads as a project's (`llm.anthropic.tool.project_files`): set `paths.state` outside any project. `DISABLE_PROMPT_CACHING` is set because the tool would otherwise pay to cache a prompt it never sends twice. bilbo stops the tool at `llm.timeout`, with what it started in its process group; a process that starts a session of its own is not stopped. A tool may make more than one request of its own for one call; with no tool on offer it makes one. A timer's run has no shell environment: its `PATH` is the one `bilbo setup` wrote into the unit, which holds the folder setup found the tool in. Give `llm.anthropic.tool.program` its full path when the program is in none of them.
 
 By `tool`, `openai` is the tool codex, release 0.169.0, on a ChatGPT login of its own and no key: `[llm.openai.tool]` holds `program`, `effort`, `arguments`, `inherit`, `environment`, `home` and `system_files`. It is for a personal ChatGPT plan. bilbo runs the tool with no tool the model can call, and does not start it otherwise. bilbo finds the program once a run, asks it its release then and again before every call, and stops at any other than 0.169.0: its arguments, and its reading of what the tool prints, are that release's, and a later one waits for bilbo. It starts the program by the path it found it at, for every call, and stops the run if that path leads to another file meanwhile. bilbo writes the model's entry of the tool's own catalog, as `codex debug models --bundled` prints it, with its tools turned off: `llm.openai.model` must be a model that release bundles, and `llm.openai.tool.effort` an effort that entry lists. `llm.openai.tool.arguments` is read as flags, settings and features bilbo knows: `exec` first and `-` last; the flags `--json`, `--ephemeral`, `--ignore-user-config`, `--ignore-rules`, `--skip-git-repo-check`, `--strict-config`, `-s`, `-m`, `-c` and `--disable`; a setting of `-c` or a feature of `--disable` that is not in the default list is refused, but for `model_verbosity`, `model_reasoning_summary` and `service_tier`, which `-c` may add. The list must keep every item of the default that removes a tool or your own setup, with `-m` followed by `{model}` and the effort as `{effort}`, and the run names the one that is missing. A reply that shows a tool was reached ends the run, and charges no entry a try.
 
@@ -834,7 +813,7 @@ CODEX_HOME=~/.local/state/bilbo/derive/codex codex login
 
 Give `CODEX_HOME` to that one command and do not export it. `bilbo derive --dry-run` prints the folder in force as `home:`. Use it for nothing else. bilbo does not start the tool when the folder holds a file codex reads as your setup (`AGENTS.md`, `AGENTS.override.md`, `config.toml`, `.env`, `environments.toml`, `rules`, `skills`, `hooks.json`, `agents`, `memories`); when it is your own codex home or the folder the tool runs in, or holds one, or is inside one; when its group or others can write to it; or when its `auth.json` is missing, a link, or a file with a second name.
 
-The tool runs in the folder claude runs in, `<state>/derive/work`, with only the variables `llm.openai.tool.inherit` names, the ones `llm.openai.tool.environment` gives, and two bilbo sets: `CODEX_HOME`, and `HOME`, which is that empty folder, so the tool finds nothing of yours through it. A git checkout around that folder adds nothing: the arguments must hold `-c project_root_markers=[]`, with which codex takes the folder it runs in as the project's root and reads no skill of a checkout above it. bilbo itself needs `HOME` or `CODEX_HOME` in its own environment, to tell your codex home from its own. Neither list takes `HOME` or a variable whose name starts with `CODEX_` or `OPENAI_`: such a variable can give the tool another login or another place to send a request. A machine that reaches the network through a proxy adds `HTTPS_PROXY` to `inherit`. `derive.answer_tokens` is not sent, since the tool has no setting for it: an answer the service cuts is a failed call, and the run says to lower `derive.window`. The log names the model that answered only when the service sent the request to another. A spent plan or a lost login stops the run, and so does an error of the tool's that bilbo does not know: it charges no entry a try. A timer's run has no shell environment: give `llm.openai.tool.program` its full path.
+The tool runs in the folder claude runs in, `<state>/derive/work`, with only the variables `llm.openai.tool.inherit` names, the ones `llm.openai.tool.environment` gives, and two bilbo sets: `CODEX_HOME`, and `HOME`, which is that empty folder, so the tool finds nothing of yours through it. A git checkout around that folder adds nothing: the arguments must hold `-c project_root_markers=[]`, with which codex takes the folder it runs in as the project's root and reads no skill of a checkout above it. bilbo itself needs `HOME` or `CODEX_HOME` in its own environment, to tell your codex home from its own. Neither list takes `HOME` or a variable whose name starts with `CODEX_` or `OPENAI_`: such a variable can give the tool another login or another place to send a request. A machine that reaches the network through a proxy adds `HTTPS_PROXY` to `inherit`. `derive.answer_tokens` is not sent, since the tool has no setting for it: an answer the service cuts is a failed call, and the run says to lower `derive.window`. The log names the model that answered only when the service sent the request to another. A spent plan or a lost login stops the run, and so does an error of the tool's that bilbo does not know: it charges no entry a try. A timer's run has no shell environment: its `PATH` is the one `bilbo setup` wrote into the unit, which holds the folder setup found the tool in. Give `llm.openai.tool.program` its full path when the program is in none of them.
 
 Three things no argument rules. A file of the machine that configures codex whatever its arguments are: bilbo does not start the tool while one of `llm.openai.tool.system_files` exists (`/etc/codex/config.toml`, `/etc/codex/managed_config.toml`, `/etc/codex/requirements.toml`, the machine's skills in `/etc/codex/skills`, and on macOS the managed preferences of the machine or of one of its users, where Apple documents them); read the file, then take it out of the list to run with it. A file or a folder there that bilbo cannot read stops the run too. A forced preference macOS keeps anywhere else is not seen. A configuration bilbo cannot see: the one a business, education or enterprise workspace of ChatGPT gives its members from the service, which is why this way is for a personal plan. And what codex adds on the account's word: while the account's Codex setting for commit attribution is on (the service reports it to the tool as `commit_attribution_enabled`), every request carries codex's instructions for commits and pull requests beside bilbo's. bilbo can neither remove nor see them, and the model has no tool to act on them; turn the setting off in the account to keep them out.
 
@@ -848,7 +827,7 @@ A timer's run has no shell environment, so a variable your shell sets is not the
 install -m 600 /dev/null <the file>
 ```
 
-Then write one line in it with an editor, the variable `key_env` names, `=`, and the key (`ANTHROPIC_API_KEY=<the key>` with the default), and add `EnvironmentFile=<the file>` to the unit. Never write the key into the unit's file or the agent's plist. A launchd agent can name no such file, so on macOS `key_command` is the one private way: a program that reads the key from your keychain.
+Then write one line in it with an editor, the variable `key_env` names, `=`, and the key (`ANTHROPIC_API_KEY=<the key>` with the default), and add `EnvironmentFile=<the file>` in a drop-in of the unit (`systemctl --user edit bilbo-derive.service`): `bilbo setup` writes the unit's own file again and never reads a drop-in. Never write the key into the unit's file or the agent's plist. A launchd agent can name no such file, so on macOS `key_command` is the one private way: a program that reads the key from your keychain.
 
 ### Where a request goes
 
@@ -953,30 +932,9 @@ The lines above it stay about notes: an entry of a kind with no instruction coun
 
 ### The timer
 
-A timer runs `bilbo derive` every 30 minutes. Nothing installs it yet: its files are in [`docs/reference/timer/`](timer/), with `@BILBO@` for the absolute path of `bilbo` and `@LOG@` for the log file. Run these from a checkout of the bilbo repository.
+Once [`bilbo setup`](#setup) has installed it, a timer runs `bilbo derive` every `setup.derive.every`, which is 30 minutes unless you set it. It is installed whether or not derive is on: while one of `derive.enabled`, `llm.provider` and `derive.in` is unset its runs send nothing, and setup's row names the first of the three that the config file and the unit leave so.
 
-The timer sets no variable: a unit installed as written reads the default config file and the default folders, not the ones your shell's `BILBO_*` or `XDG_*` variables name. Set `llm.*`, `derive.*` and `paths.*` in the config file.
-
-On macOS, with launchd:
-
-```sh
-mkdir -p ~/Library/LaunchAgents ~/Library/Logs
-sed -e "s|@BILBO@|$(command -v bilbo)|" -e "s|@LOG@|$HOME/Library/Logs/bilbo-derive.log|" \
-  docs/reference/timer/io.github.delucca.bilbo.derive.plist \
-  > ~/Library/LaunchAgents/io.github.delucca.bilbo.derive.plist
-launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/io.github.delucca.bilbo.derive.plist
-```
-
-On Linux, with systemd:
-
-```sh
-mkdir -p ~/.config/systemd/user ~/.cache
-sed -e "s|@BILBO@|$(command -v bilbo)|" -e "s|@LOG@|$HOME/.cache/bilbo-derive.log|" \
-  docs/reference/timer/bilbo-derive.service > ~/.config/systemd/user/bilbo-derive.service
-cp docs/reference/timer/bilbo-derive.timer ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now bilbo-derive.timer
-```
+The unit carries the folder variables setup saw, a `PATH` and no other variable: a key your shell sets in a variable does not reach it. Set `llm.*`, `derive.*` and `paths.*` in the config file. Its `PATH` holds the folders setup found `claude` and `codex` in, so a provider that goes through a tool is found by its name; a program in another folder is given by its full path.
 
 ### Files
 
@@ -1000,3 +958,88 @@ tokens in <n>, tokens out <n>, seconds <n>
 | 0 | done, also when derive is off, nothing is due or another derive runs; a second derive that finds the store held longer than `store.wait` exits 1 with `another bilbo is writing the store` |
 | 1 | a failed call, a ref that is refused, a provider that stays busy or stops the run, labels that cannot be trusted, a store or index failure, or a file refused while derive ran the follows again for another bilbo |
 | 2 | usage or config error |
+
+## setup
+
+```text
+bilbo setup [--claude <program>] [--codex <program>]
+            [--agy <program>] [--notes <folder>] [--plugin <folder>]
+bilbo setup --remove [--claude <program>] [--codex <program>]
+            [--agy <program>]
+```
+
+Makes a machine ready for bilbo: a notes folder that is followed, the plugin in Claude Code, Codex and AGY, the plugin's hooks trusted in Codex, and two timers, one that runs [`bilbo refresh`](#refresh) and one that runs [`bilbo derive`](#derive). It says what it did, a row a step. Run it again at any time, and after every new bilbo: a step that is as it should be is `kept`. `--remove` takes the plugin and the timers out again ([Removing it](#removing-it)).
+
+### Before it writes
+
+A usage or config error, a store root that holds bilbo 0.20's `notes/` or `library/`, a state or cache folder inside the root, and a folder setup would make or write notes into inside the root, by its own path or through a link, end the run with exit 2 before anything is written or started. Those folders are the notes folder, one that is followed already among them; the config file's folder, when a follow is to be saved; the timers' logs; and the units' folder. It opens no store and waits for no bilbo that writes one.
+
+### The steps
+
+Seven, in this order. No step stops the next, but `codex-hooks`, which runs only when the `codex` step ended `installed`, `updated` or `kept`.
+
+| Step | What it sees to |
+|---|---|
+| `notes` | The folder [`setup.notes`](configuration.md#keys) names is there and is a `[[follow]]` of the kind `markdown` in the config file, written as [`bilbo remember --follow`](#follows) writes one. With the key at its default and a Markdown folder followed already, that folder is kept and none is made. A folder followed as another kind, or with no kind, fails the step: give its follow `kind = "markdown"`. |
+| `claude` | Claude Code has the marketplace `bilbo` from the plugin's folder and the plugin `bilbo@bilbo` from it, in the user's scope, turned on. |
+| `codex` | The same in Codex, at this bilbo's version and installed from the plugin's folder. |
+| `codex-hooks` | Codex lists exactly the hooks the plugin's `hooks/hooks.json` declares, each with that file's command, matcher and timeout, turned on, not run in the background (`async`) and with no limit on the context it adds, and trusts them: Codex skips a plugin's hook it does not trust, in silence. A hook Codex lists with another command, as `async` or with such a limit is not trusted, and the step fails. The trust is written through `codex app-server`, for bilbo's hooks alone, beside every other entry Codex keeps. |
+| `agy` | AGY has one copy of the plugin, whose files are the folder's, turned on. |
+| `refresh-timer` | A timer runs `bilbo refresh` every `setup.refresh.every`. |
+| `derive-timer` | A timer runs `bilbo derive` every `setup.derive.every`. |
+
+The plugin's folder is the one [`setup.plugin`](configuration.md#keys) names, or `share/bilbo` of the package this bilbo runs from. Before it runs a command, setup reads the file each tool installs from in that folder. A file that names another marketplace or plugin than `bilbo`, takes the plugin from another folder than `./plugins/bilbo`, makes it depend on other plugins, or is no regular file, fails the tool's step: nothing is added to the tool and nothing is taken out of it. Each tool is changed through its own commands and never by writing its files. A plugin that is turned off, that comes from another folder or another version, or whose copy differs, is taken out and installed again. Nothing of another name is changed: not another plugin or marketplace, not a hook of yours, not bilbo 0.20's launch agents. When a tool lists another plugin from the marketplace `bilbo`, or `bilbo@bilbo` in another scope, the step changes nothing and fails, naming it: Claude Code takes every plugin of a marketplace out with the marketplace.
+
+A tool whose program is not on `PATH` is `skipped` while its key is at the default, and `failed` when you named the program. `setup.claude.enabled = false`, or the same key of `codex` or `agy`, keeps setup's hands off that tool: its step is `skipped`, in a removal too, and a plugin already in the tool stays as it is.
+
+A step that fails part way puts nothing back. Its row names the command that failed and says nothing of what the tool then holds: a command can do its work and then fail, or hang past `setup.wait`, so the tool can be without the plugin it had, or with it. The next `bilbo setup` looks and goes on from what it finds.
+
+### The timers
+
+On macOS setup writes a launchd agent for each timer, `io.github.delucca.bilbo.refresh.plist` and `io.github.delucca.bilbo.derive.plist` in `~/Library/LaunchAgents`, and loads it with `launchctl`. On Linux it writes `bilbo-refresh.service`, `bilbo-refresh.timer`, `bilbo-derive.service` and `bilbo-derive.timer` in `$XDG_CONFIG_HOME/systemd/user`, else `~/.config/systemd/user`, and enables and starts each timer with `systemctl --user`. The files in [`docs/reference/timer/`](timer/) are what it writes for a bilbo at `/opt/bilbo/bin/bilbo`, a home at `/home/me` and the three tools in `/home/me/.local/bin`.
+
+A unit runs this bilbo by its own path, so a new package needs a new `bilbo setup`. It carries `HOME`, `BILBO_CONFIG`, `XDG_CONFIG_HOME`, `BILBO_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME` and `XDG_CACHE_HOME`, each as setup's own environment had it, and a `PATH`: the folder setup found each tool's program in, then the folders of `setup.timer.path`. It carries no other variable: set every other key in the config file. A program a timer's run starts from another folder is named by its full path in its own key, or its folder is added to `setup.timer.path`. Each run appends what it prints to `refresh.log` or `derive.log` in the folder `setup.timer.logs` names, the folder `timer` of the state folder unless set; the files grow without a bound and can be deleted at any time.
+
+A timer is `kept` only when its files hold exactly what setup would write, the scheduler has it loaded and its log's folder is there. A file that differs is written again, whoever changed it: put lines of your own in a systemd drop-in, which setup never reads. Setup unloads a timer before it writes its files, so a timer it leaves loaded runs what its files say. A step that fails says which command failed, and claims no more of the timer than that. After an unload that failed no file was written; whether the timer is loaded after any command that failed is for the next look. On Linux an unload and a load are several commands, so a timer can be left part way: stopped and still enabled, or enabled and not started. The next `bilbo setup` reads what is there and goes on from it. A log that is a symbolic link, or that is there and is no regular file, fails the step before anything is loaded, and so does a path or a value a unit cannot carry: one that is not UTF-8, or that holds a control character, U+FFFE or U+FFFF. The row names the character, as `U+000A`. Two `bilbo setup` at once on one machine are not planned for. On a Linux with no `systemctl`, or whose `systemctl --user is-system-running` says `offline`, the two timers are `skipped`; any other answer it does not know, or none in `setup.wait`, fails them.
+
+A unit under an older name (`io.github.delucca.bilbo.remember.plist`, `bilbo-remember.service`, `bilbo-remember.timer`), installed by hand from an earlier bilbo's files, is not setup's: unload it and delete it yourself, or two timers run `bilbo refresh`.
+
+### Output
+
+Standard output, seven rows, the fields apart by tabs:
+
+```text
+notes<TAB>installed<TAB>made /home/me/.local/share/bilbo/notes and followed it in /home/me/.config/bilbo/config.toml, after the default follows it would replace
+claude<TAB>installed<TAB>bilbo@bilbo from /opt/bilbo/share/bilbo
+codex<TAB>installed<TAB>bilbo@bilbo from /opt/bilbo/share/bilbo
+codex-hooks<TAB>installed<TAB>Codex trusts 2 hooks of bilbo@bilbo
+agy<TAB>installed<TAB>bilbo from /opt/bilbo/share/bilbo
+refresh-timer<TAB>installed<TAB>every 10m, log /home/me/.local/state/bilbo/timer/refresh.log
+derive-timer<TAB>installed<TAB>every 30m, log /home/me/.local/state/bilbo/timer/derive.log; derive.enabled is false in the config and the unit
+```
+
+The second field is `installed` (it was not there), `updated` (it was there and not as wanted; the detail says how), `kept`, `skipped` (it cannot be done here, or you keep the tool out) or `failed` (the detail says why). A step is `installed` or `updated` only after setup looked again and found it so. The `derive-timer` row ends with the first of `derive.enabled`, `llm.provider` and `derive.in` that the config file and the unit leave false or empty; `derive` sends nothing while one is. The row reads the config file and the variables the unit carries, and none of your shell's `BILBO_DERIVE_` or `BILBO_LLM_` variables. It speaks for those two alone: a variable a systemd drop-in or the manager's own environment sets for the service is not in it. A tab or a line feed in a path is written `\t` or `\n`. When a step failed, standard error says which: `1 step failed: codex; bilbo setup tries it again` (`bilbo setup --remove tries it again` after a removal). Before that line, standard error holds what the `notes` step's save said, in the words of `bilbo remember --follow`: the lines to add to a config file setup cannot write, or a warning that the file's folder could not be synced.
+
+### Removing it
+
+`bilbo setup --remove` takes out what setup put in: the plugin `bilbo` and the marketplace `bilbo` from Claude Code and Codex, by their own commands, whatever folder they came from; the trust entries Codex keeps for the hooks of `bilbo@bilbo`, through `codex app-server`; AGY's copy of the plugin; and the two timers, unloaded and their unit files deleted. It prints six rows, `claude`, `codex-hooks`, `codex`, `agy`, `refresh-timer` and `derive-timer`, each `removed` (it was there and is gone, seen in a second look), `absent` (it was not there), `skipped` or `failed`:
+
+```text
+claude<TAB>removed<TAB>bilbo@bilbo and the marketplace bilbo
+codex-hooks<TAB>removed<TAB>2 trust entries of bilbo@bilbo
+codex<TAB>removed<TAB>bilbo@bilbo and the marketplace bilbo
+agy<TAB>removed<TAB>bilbo
+refresh-timer<TAB>removed<TAB>bilbo-refresh.timer
+derive-timer<TAB>removed<TAB>bilbo-derive.timer
+```
+
+It leaves the notes folder and its files, the `[[follow]]` and every other line of the config file, the store, the state and cache folders and the timers' logs: they are yours. It takes `--claude`, `--codex` and `--agy`, and neither `--notes` nor `--plugin`. It does not ask about the store root, so a machine whose root bilbo refuses can still be cleaned. Run again, it changes nothing and says `absent` for every row it can look at: all six on a machine with the three tools and a scheduler. A tool that is kept out or not found, and a scheduler that is not there, are `skipped` each time. Another plugin of the marketplace `bilbo` stops a tool's step, as in a setup. Codex's two rows go by one look, made first: when that plugin is there, when Codex's lists cannot be read, or when Codex is kept out or not found, neither the trust nor the plugin is touched, and the `codex-hooks` row says `the codex step was skipped` or `the codex step failed`. Otherwise the trust goes first and the plugin after it, each with its own row: one can be `removed` and the other `failed`, and the next removal, or the next setup, goes on from there. The removal needs no plugin folder and no package: it goes by what each tool lists under the names. On Linux it also stops a run of either service that is in progress, deletes the link systemd keeps for an enabled timer, and reloads the manager; a removal after one that failed part way goes on from what is left, and says `absent` only when nothing is.
+
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | no step failed |
+| 1 | a step failed |
+| 2 | usage or config error, `--notes` or `--plugin` with `--remove`, a store root that holds bilbo 0.20's `notes/` or `library/`, a state or cache folder inside the root, or a folder setup would make or write notes into inside the root |

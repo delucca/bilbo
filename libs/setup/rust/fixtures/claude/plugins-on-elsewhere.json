@@ -1,0 +1,22 @@
+[
+  {
+    "id": "bilbo@bilbo",
+    "version": "unknown",
+    "scope": "user",
+    "enabled": true,
+    "installPath": "/world/home/.claude/plugins/cache/bilbo/bilbo/unknown",
+    "readFromFolder": "/world/old/plugins/bilbo"
+  },
+  {
+    "id": "cc-plugin-privacy@builtin",
+    "version": "unknown",
+    "scope": "user",
+    "enabled": true
+  },
+  {
+    "id": "cc-plugin-sec-default@builtin",
+    "version": "unknown",
+    "scope": "managed",
+    "enabled": true
+  }
+]

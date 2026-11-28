@@ -252,6 +252,13 @@ fn hits(stdout: &str) -> Vec<Hit> {
     found
 }
 
+fn hits_with(stdout: &str, trailer: Option<&str>) -> Vec<Hit> {
+    match trailer {
+        Some(line) => hits_trailed(stdout, line),
+        None => hits(stdout),
+    }
+}
+
 fn hits_trailed(stdout: &str, trailer: &str) -> Vec<Hit> {
     let (found, held) = hits_and_trailer(stdout);
     assert_eq!(held.as_deref(), Some(trailer));
@@ -1685,9 +1692,8 @@ fn a_lower_budget_cuts_a_hit_and_prints_less() {
     assert!(small.stdout.len() < full.stdout.len());
 }
 
-fn cost(stdout: &str) -> usize {
-    hits_and_trailer(stdout)
-        .0
+fn cost(stdout: &str, trailer: Option<&str>) -> usize {
+    hits_with(stdout, trailer)
         .iter()
         .map(|hit| Shared.count(&hit.printed))
         .sum()
@@ -1698,6 +1704,7 @@ fn the_chunks_take_the_notes_room_when_no_note_matches() {
     let sandbox = Sandbox::new("recall_budget_notes_room");
     sandbox.write("notes/long.md", long_note("turnips").as_bytes());
     sandbox.remember(&["notes"]);
+    let alone_more = next_page("turnips", 2);
     let run = |notes: &str| {
         sandbox.run_with(
             &["recall", "--budget", "256", "turnips"],
@@ -1706,9 +1713,21 @@ fn the_chunks_take_the_notes_room_when_no_note_matches() {
     };
     let (alone, joined) = (run("0"), run("512"));
     assert_eq!((alone.code, joined.code), (0, 0), "{:?}", joined.stderr);
-    assert!(cost(&alone.stdout) <= 256, "{}", cost(&alone.stdout));
-    assert!(cost(&joined.stdout) > 256, "{}", cost(&joined.stdout));
-    assert!(cost(&joined.stdout) <= 768, "{}", cost(&joined.stdout));
+    assert!(
+        cost(&alone.stdout, Some(&alone_more)) <= 256,
+        "{}",
+        cost(&alone.stdout, Some(&alone_more))
+    );
+    assert!(
+        cost(&joined.stdout, Some(&alone_more)) > 256,
+        "{}",
+        cost(&joined.stdout, Some(&alone_more))
+    );
+    assert!(
+        cost(&joined.stdout, Some(&alone_more)) <= 768,
+        "{}",
+        cost(&joined.stdout, Some(&alone_more))
+    );
 }
 
 const SMALL_CHUNKS: (&str, &str) = ("BILBO_SEARCH_CHUNK_TOKENS", "256");
@@ -2199,8 +2218,8 @@ fn is_note(hit: &Hit) -> bool {
     hit.extras.first().is_some_and(|extra| extra == "note")
 }
 
-fn notes_part(stdout: &str) -> (String, String) {
-    let (found, _) = hits_and_trailer(stdout);
+fn notes_part(stdout: &str, trailer: Option<&str>) -> (String, String) {
+    let found = hits_with(stdout, trailer);
     let at = found
         .iter()
         .position(|hit| hit.extras.first().is_some_and(|kind| kind == "note"))
@@ -2302,23 +2321,33 @@ fn a_word_only_a_note_holds_leaves_the_chunks_as_they_were() {
 fn the_budget_flag_bounds_the_chunks_and_the_key_bounds_the_notes() {
     let noted = with_notes("recall_notes_budget", 6);
     let base = noted.sandbox.run(&["recall", "carrot", "rows"]);
-    let (chunks, notes) = notes_part(&base.stdout);
+    let (chunks, notes) = notes_part(&base.stdout, None);
     assert!(!chunks.is_empty() && !notes.is_empty());
     let flagged = noted
         .sandbox
         .run(&["recall", "--budget", "300", "carrot", "rows"]);
-    let (flagged_chunks, flagged_notes) = notes_part(&flagged.stdout);
+    let (flagged_chunks, flagged_notes) = notes_part(
+        &flagged.stdout,
+        Some("more: bilbo recall --page 2 --budget 300 -- 'carrot rows'"),
+    );
     assert_ne!(flagged_chunks, chunks);
     assert_eq!(flagged_notes, notes);
     let keyed = noted.sandbox.run_with(
         &["recall", "carrot", "rows"],
         &[("BILBO_RECALL_NOTES_BUDGET", "256")],
     );
-    let (keyed_chunks, keyed_notes) = notes_part(&keyed.stdout);
+    let (keyed_chunks, keyed_notes) = notes_part(
+        &keyed.stdout,
+        Some("more: bilbo recall --page 2 -- 'carrot rows'"),
+    );
     assert_eq!(keyed_chunks, chunks);
     assert!(!hits(&keyed_notes).is_empty(), "{keyed_notes}");
-    assert!(cost(&keyed_notes) <= 256, "{}", cost(&keyed_notes));
-    assert!(cost(&notes) > 256, "{}", cost(&notes));
+    assert!(
+        cost(&keyed_notes, None) <= 256,
+        "{}",
+        cost(&keyed_notes, None)
+    );
+    assert!(cost(&notes, None) > 256, "{}", cost(&notes, None));
 }
 
 #[test]
@@ -2331,7 +2360,7 @@ fn a_notes_budget_of_zero_prints_no_note_and_no_note_among_the_chunks() {
     );
     assert_eq!(zero.code, 0, "{:?}", zero.stderr);
     assert!(!entries_named(&noted.sandbox, &zero).contains(&noted.note));
-    assert_eq!(zero.stdout, notes_part(&base.stdout).0);
+    assert_eq!(zero.stdout, notes_part(&base.stdout, None).0);
 }
 
 #[test]
@@ -2575,7 +2604,7 @@ fn two_short_notes_of_one_window_are_both_printed() {
         )
     };
     assert_eq!(
-        notes_part(&run.stdout).1,
+        notes_part(&run.stdout, None).1,
         format!(
             "{}{}",
             printed(1, "The user asked to thin the rows."),
@@ -2643,7 +2672,7 @@ fn a_scope_brings_the_notes_of_the_entry_it_names_and_no_other() {
         assert_eq!(run.code, 0, "{:?}", run.stderr);
         let text = texts[usize::from(parent == second)];
         assert_eq!(
-            notes_part(&run.stdout).1,
+            notes_part(&run.stdout, None).1,
             format!(
                 "=== {}#r1\t2 lines\tnote\n{parent}#g1:r3 2026-11-07\n{text}\n",
                 note.short()
@@ -2802,21 +2831,26 @@ turnips row 14 of the north bed is thinned and\n\
 
 const SMALL_PAGE: [(&str, &str); 1] = [("BILBO_RECALL_NOTES_BUDGET", "0")];
 
+fn next_page(word: &str, page: usize) -> String {
+    format!("more: bilbo recall --page {page} --budget 256 -- {word}")
+}
+
 fn paged(sandbox: &Sandbox, word: &str) -> Vec<Run> {
-    let mut args: Vec<String> = ["recall", "--budget", "256", "--", word]
-        .iter()
-        .map(|arg| (*arg).to_owned())
-        .collect();
     let mut runs = Vec::new();
     loop {
-        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        let run = sandbox.run_with(&refs, &SMALL_PAGE);
+        let page = (runs.len() + 1).to_string();
+        let mut args = vec!["recall"];
+        if runs.is_empty() {
+            args.extend(["--budget", "256", "--", word]);
+        } else {
+            args.extend(["--page", &page, "--budget", "256", "--", word]);
+        }
+        let run = sandbox.run_with(&args, &SMALL_PAGE);
         assert!(runs.len() < 40, "the pages never end");
-        let (_, more) = hits_and_trailer(&run.stdout);
+        let (_, trailer) = hits_and_trailer(&run.stdout);
         runs.push(run);
-        let Some(more) = more else { break };
-        let line = more.strip_prefix("more: bilbo ").expect("a command");
-        args = line.split(' ').map(str::to_owned).collect();
+        let Some(trailer) = trailer else { break };
+        assert_eq!(trailer, next_page(word, runs.len() + 1));
     }
     runs
 }
@@ -2980,9 +3014,10 @@ fn the_log_says_which_page_a_run_printed() {
             ("q4", "nothing", past.as_str())
         ]
     );
-    for (line, run) in mine.iter().zip([&first, &second]) {
-        let shown: Vec<String> = hits_and_trailer(&run.stdout)
-            .0
+    for (n, (line, run)) in mine.iter().zip([&first, &second]).enumerate() {
+        let page = n + 1;
+        let trailer = (page < pages).then(|| next_page("turnips", page + 1));
+        let shown: Vec<String> = hits_with(&run.stdout, trailer.as_deref())
             .iter()
             .map(|hit| hit.reference.clone())
             .collect();
@@ -3087,7 +3122,7 @@ fn the_suites_reader_takes_only_the_trailer_a_run_expects() {
         found[0].content.lines().last(),
         Some("more: bilbo recall --page 2 -- x")
     );
-    let (chunks, notes) = notes_part(&format!("{}{note}", hit("", "plain")));
+    let (chunks, notes) = notes_part(&format!("{}{note}", hit("", "plain")), None);
     assert_eq!(chunks, hit("", "plain"));
     assert_eq!(notes, note);
 
@@ -3100,4 +3135,9 @@ fn the_suites_reader_takes_only_the_trailer_a_run_expects() {
     assert_eq!(found[0].printed, hit("", "plain"));
     assert!(std::panic::catch_unwind(|| hits(&garbage)).is_err());
     assert_eq!(hits_trailed(&garbage, "more: garbage").len(), 1);
+    let compared = "more: bilbo recall --page 2 --budget 300 -- 'carrot rows'";
+    let extra = format!("{}{garbage}", hit("\tnote", "x"));
+    assert!(std::panic::catch_unwind(|| notes_part(&extra, Some(compared))).is_err());
+    assert!(std::panic::catch_unwind(|| notes_part(&extra, None)).is_err());
+    assert!(std::panic::catch_unwind(|| cost(&extra, None)).is_err());
 }

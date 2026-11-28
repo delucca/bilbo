@@ -1,0 +1,12 @@
+{
+  "marketplaces": [
+    {
+      "name": "bilbo",
+      "root": "/world/old",
+      "marketplaceSource": {
+        "sourceType": "local",
+        "source": "/world/old"
+      }
+    }
+  ]
+}

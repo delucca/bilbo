@@ -55,7 +55,11 @@ def environment(name, store=STORE):
 
 def run(name, *args, binary=BILBO, store=STORE, env=None):
     done = subprocess.run([binary, *args], env=environment(name, store) | (env or {}), capture_output=True, check=False)
-    return done.returncode, done.stdout.decode(), done.stderr.decode()
+    try:
+        out = done.stdout.decode()
+    except UnicodeDecodeError:
+        out = None
+    return done.returncode, out, done.stderr.decode()
 
 
 REORDERS = set("\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")
@@ -76,6 +80,8 @@ def more_line(budget, words, scope=None, kind=None):
 
 
 def parsed(stdout, more=None):
+    if stdout is None:
+        return None
     lines = stdout.split("\n")
     if lines.pop() != "":
         return None
@@ -165,7 +171,7 @@ def main(binary=BILBO, store=STORE):
         if "remembered" not in manifest or not scoped_probe(code, out, err, scope, want):
             bad(f"{name}: recall --in {repo} exited {code}; stderr {err.strip()[:300]!r}; the repository has {want} entries")
         code, out, err = run(name, "recall", "--", "the", "and", "of", "to", binary=binary, store=store)
-        if code != 1 or out or not err.splitlines() or err.splitlines()[-1] != "bilbo: nothing matched":
+        if code != 1 or out != "" or not err.splitlines() or err.splitlines()[-1] != "bilbo: nothing matched":
             bad(f"{name}: a query of stopwords exited {code}; stderr {err.strip()[:300]!r}")
         if has_notes(manifest, name):
             code, out, err = run(name, "recall", "--kind", "note", "--budget", "4000", "--", "user", "assistant", binary=binary, store=store)
@@ -217,6 +223,19 @@ def trailer_lines():
     if headers(f"{hit}{plain}\n") is not None:
         print("lines: a trailer was accepted where none is expected")
         return 1
+    import os
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        program = Path(tmp) / "recall.sh"
+        program.write_text("#!/bin/sh\nprintf '\\377'\necho 'bilbo: --in kept 3 entries' >&2\nexit 0\n")
+        os.chmod(program, 0o755)
+        for printed in ("\\377", "=== 2T6W9YB0DE#r1\\t1 line\\n\\377\\n"):
+            program.write_text(f"#!/bin/sh\nprintf '{printed}'\necho 'bilbo: --in kept 3 entries' >&2\nexit 0\n")
+            code, out, err = run("n", "recall", binary=str(program), store=Path(tmp))
+            if scoped_probe(code, out, err, "/r/a", 3):
+                print(f"lines: the scoped probe took standard output with a byte that is no UTF-8: {printed}")
+                return 1
     own = more_line(4000, ["user", "assistant"], "/r/a")
     kept = "bilbo: --in kept 3 entries\n"
     for why, out, taken in (("a hit and its own trailer", f"{hit}{own}\n", True),

@@ -1,0 +1,8 @@
+[
+  {
+    "name": "personal",
+    "source": "directory",
+    "installLocation": "/world/pkg",
+    "path": "/world/pkg"
+  }
+]

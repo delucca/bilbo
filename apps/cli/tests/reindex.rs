@@ -375,6 +375,7 @@ impl Sandbox {
             var: std::rc::Rc::new(move |name| vars.get(name).cloned()),
             stdin: Box::new(io::empty()),
             who: Who::Nobody,
+            program: None,
             notice: Box::new(move |message| {
                 sink.lock().expect("notices").extend(message.plain_lines());
             }),
@@ -503,6 +504,7 @@ fn bilbo(vars: HashMap<String, OsString>, args: &[&str], notices: Option<Sender<
         var: std::rc::Rc::new(move |name| vars.get(name).cloned()),
         stdin: Box::new(io::empty()),
         who: Who::Nobody,
+        program: None,
         notice: Box::new(move |message| {
             let lines = message.plain_lines();
             if let Some(notices) = &notices {
@@ -910,6 +912,7 @@ fn a_reindex_holds_the_store_from_the_catalog_to_the_commit_and_a_refresh_leaves
         }),
         stdin: Box::new(io::empty()),
         who: Who::Nobody,
+        program: None,
         notice: Box::new(|_| {}),
     };
     let settings = settings::load(

@@ -193,6 +193,7 @@ mod tests {
             var: Rc::new(move |name| if name == "HOME" { home.clone() } else { None }),
             stdin: Box::new(io::empty()),
             who: Who::Person,
+            program: None,
             notice: Box::new(move |message: &Message| {
                 assert!(said.borrow().len() < 50, "the prompt asks again and again");
                 said.borrow_mut()

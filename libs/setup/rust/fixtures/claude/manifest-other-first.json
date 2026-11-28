@@ -1,0 +1,17 @@
+{
+  "name": "bilbo",
+  "owner": {
+    "name": "somebody"
+  },
+  "plugins": [
+    {
+      "name": "other",
+      "source": "./plugins/other"
+    },
+    {
+      "name": "bilbo",
+      "source": "./plugins/bilbo",
+      "description": "A plugin."
+    }
+  ]
+}

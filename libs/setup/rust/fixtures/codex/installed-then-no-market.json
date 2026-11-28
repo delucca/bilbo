@@ -1,0 +1,11 @@
+{
+  "installed": [
+    {
+      "pluginId": "bilbo@bilbo",
+      "marketplaceName": "bilbo"
+    },
+    {
+      "pluginId": "other@elsewhere"
+    }
+  ]
+}

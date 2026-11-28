@@ -416,6 +416,18 @@ pub fn keys(kind: &[&'static KindKey], groups: &[&'static Group]) -> Vec<&'stati
         .chain(bilbo_derive::keys::ABOUT)
         .chain(bilbo_derive::tags::keys::ABOUT)
         .chain(bilbo_derive::summary::keys::ABOUT)
+        .chain([
+            &SETUP_PLUGIN.about,
+            &SETUP_NOTES.about,
+            &SETUP_CLAUDE_ENABLED.about,
+            &SETUP_CLAUDE_PROGRAM.about,
+            &SETUP_CODEX_ENABLED.about,
+            &SETUP_CODEX_PROGRAM.about,
+            &SETUP_AGY_ENABLED.about,
+            &SETUP_AGY_PROGRAM.about,
+            &SETUP_TIMER_LOGS.about,
+        ])
+        .chain(bilbo_setup::keys::ABOUT)
         .chain(kind.iter().map(|key| &key.about))
         .collect()
 }
@@ -481,6 +493,168 @@ pub struct Digest {
     pub log_enabled: Resolved<bool>,
 }
 
+fn optional_path(value: &Value<'_>) -> Result<Option<PathBuf>, Error> {
+    match value.os_text() {
+        Some(text) if text.is_empty() => Ok(None),
+        _ => folder::path(value).map(Some),
+    }
+}
+
+fn shown_path(path: &Option<PathBuf>) -> String {
+    path.as_deref().map_or_else(|| quote(""), folder::show)
+}
+
+fn program(value: &Value<'_>) -> Result<PathBuf, Error> {
+    match value.os_text() {
+        Some(text) if text.is_empty() => Err(value.refuse()),
+        Some(text) if !text.as_bytes().contains(&b'/') && !text.as_bytes().contains(&0) => {
+            Ok(PathBuf::from(text))
+        }
+        _ => folder::path(value),
+    }
+}
+
+pub const SETUP_PLUGIN: Key<Option<PathBuf>> = Key {
+    about: About {
+        name: "setup.plugin",
+        variable: Some("BILBO_SETUP_PLUGIN"),
+        default: Default::Toml(r#""""#),
+        allowed: "an absolute path or one starting with ~/, or the empty text for the package's own",
+        doc: "The folder that holds the plugin bilbo setup installs: the two marketplace files and plugins/bilbo. Empty: the folder share/bilbo of the package this bilbo runs from.",
+    },
+    parse: optional_path,
+    show: shown_path,
+};
+
+pub const SETUP_NOTES: Key<Option<PathBuf>> = Key {
+    about: About {
+        name: "setup.notes",
+        variable: Some("BILBO_SETUP_NOTES"),
+        default: Default::Folder(Folder {
+            xdg: "XDG_DATA_HOME",
+            under_xdg: "bilbo/notes",
+            under_home: ".local/share/bilbo/notes",
+        }),
+        allowed: "an absolute path or one starting with ~/, or the empty text for none",
+        doc: "The notes folder bilbo setup makes, when it is missing, and follows as Markdown. Its default is used only while the config file follows no Markdown folder that is there.",
+    },
+    parse: optional_path,
+    show: shown_path,
+};
+
+pub const SETUP_CLAUDE_ENABLED: Key<bool> = Key {
+    about: About {
+        name: "setup.claude.enabled",
+        variable: Some("BILBO_SETUP_CLAUDE_ENABLED"),
+        default: Default::Toml("true"),
+        allowed: "true or false",
+        doc: "Whether bilbo setup installs the plugin in Claude Code, and bilbo setup --remove takes it out of it.",
+    },
+    parse: |value| value.boolean().ok_or_else(|| value.refuse()),
+    show: ToString::to_string,
+};
+
+pub const SETUP_CLAUDE_PROGRAM: Key<PathBuf> = Key {
+    about: About {
+        name: "setup.claude.program",
+        variable: Some("BILBO_SETUP_CLAUDE_PROGRAM"),
+        default: Default::Toml(r#""claude""#),
+        allowed: "a program's name, or its absolute path or one starting with ~/",
+        doc: "The program bilbo setup starts to install the plugin in Claude Code.",
+    },
+    parse: program,
+    show: |path| folder::show(path),
+};
+
+pub const SETUP_CODEX_ENABLED: Key<bool> = Key {
+    about: About {
+        name: "setup.codex.enabled",
+        variable: Some("BILBO_SETUP_CODEX_ENABLED"),
+        default: Default::Toml("true"),
+        allowed: "true or false",
+        doc: "Whether bilbo setup installs the plugin in Codex and trusts its hooks there, and bilbo setup --remove takes both out.",
+    },
+    parse: |value| value.boolean().ok_or_else(|| value.refuse()),
+    show: ToString::to_string,
+};
+
+pub const SETUP_CODEX_PROGRAM: Key<PathBuf> = Key {
+    about: About {
+        name: "setup.codex.program",
+        variable: Some("BILBO_SETUP_CODEX_PROGRAM"),
+        default: Default::Toml(r#""codex""#),
+        allowed: "a program's name, or its absolute path or one starting with ~/",
+        doc: "The program bilbo setup starts to install the plugin in Codex and to trust its hooks there.",
+    },
+    parse: program,
+    show: |path| folder::show(path),
+};
+
+pub const SETUP_AGY_ENABLED: Key<bool> = Key {
+    about: About {
+        name: "setup.agy.enabled",
+        variable: Some("BILBO_SETUP_AGY_ENABLED"),
+        default: Default::Toml("true"),
+        allowed: "true or false",
+        doc: "Whether bilbo setup installs the plugin in AGY, and bilbo setup --remove takes it out of it.",
+    },
+    parse: |value| value.boolean().ok_or_else(|| value.refuse()),
+    show: ToString::to_string,
+};
+
+pub const SETUP_AGY_PROGRAM: Key<PathBuf> = Key {
+    about: About {
+        name: "setup.agy.program",
+        variable: Some("BILBO_SETUP_AGY_PROGRAM"),
+        default: Default::Toml(r#""agy""#),
+        allowed: "a program's name, or its absolute path or one starting with ~/",
+        doc: "The program bilbo setup starts to install the plugin in AGY.",
+    },
+    parse: program,
+    show: |path| folder::show(path),
+};
+
+pub const SETUP_TIMER_LOGS: Key<Option<PathBuf>> = Key {
+    about: About {
+        name: "setup.timer.logs",
+        variable: Some("BILBO_SETUP_TIMER_LOGS"),
+        default: Default::Toml(r#""""#),
+        allowed: "an absolute path or one starting with ~/, or the empty text for the state folder's own",
+        doc: "The folder the timers' runs append what they print to, as refresh.log and derive.log. Empty: the folder timer in the state folder.",
+    },
+    parse: optional_path,
+    show: shown_path,
+};
+
+#[derive(Debug)]
+pub struct Setup {
+    pub plugin: Resolved<Option<PathBuf>>,
+    pub notes: Resolved<Option<PathBuf>>,
+    pub claude_enabled: Resolved<bool>,
+    pub claude_program: Resolved<PathBuf>,
+    pub codex_enabled: Resolved<bool>,
+    pub codex_program: Resolved<PathBuf>,
+    pub agy_enabled: Resolved<bool>,
+    pub agy_program: Resolved<PathBuf>,
+    pub timer_logs: Resolved<Option<PathBuf>>,
+}
+
+pub fn folder_variables() -> Vec<&'static str> {
+    let mut names = vec!["HOME"];
+    for key in [&CONFIG, &ROOT, &STATE, &CACHE] {
+        let own = key.about.variable.into_iter();
+        let read = match &key.about.default {
+            Default::Folder(folder) => Some(folder.xdg),
+            _ => None,
+        };
+        for name in own.chain(read) {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    names
+}
 #[derive(Debug)]
 pub struct Settings {
     pub config: Resolved<PathBuf>,
@@ -503,6 +677,8 @@ pub struct Settings {
     pub derive: bilbo_derive::keys::Section,
     pub tags: bilbo_derive::tags::keys::Section,
     pub summary: bilbo_derive::summary::keys::Section,
+    pub setup: Setup,
+    pub setup_timer: bilbo_setup::keys::Section,
     pub kind: Vec<(&'static KindKey, Resolved<usize>)>,
     pub group: Vec<&'static Group>,
     shown: Vec<Shown>,
@@ -571,6 +747,18 @@ impl Settings {
         shown.extend(self.derive.shown());
         shown.extend(self.tags.shown());
         shown.extend(self.summary.shown());
+        shown.extend([
+            SETUP_PLUGIN.shown(&self.setup.plugin),
+            SETUP_NOTES.shown(&self.setup.notes),
+            SETUP_CLAUDE_ENABLED.shown(&self.setup.claude_enabled),
+            SETUP_CLAUDE_PROGRAM.shown(&self.setup.claude_program),
+            SETUP_CODEX_ENABLED.shown(&self.setup.codex_enabled),
+            SETUP_CODEX_PROGRAM.shown(&self.setup.codex_program),
+            SETUP_AGY_ENABLED.shown(&self.setup.agy_enabled),
+            SETUP_AGY_PROGRAM.shown(&self.setup.agy_program),
+            SETUP_TIMER_LOGS.shown(&self.setup.timer_logs),
+        ]);
+        shown.extend(self.setup_timer.shown());
         shown.extend(self.kind.iter().map(|(key, resolved)| key.shown(resolved)));
         shown
     }
@@ -670,6 +858,18 @@ pub fn load(
         derive: bilbo_derive::keys::section(&source)?,
         tags: bilbo_derive::tags::keys::section(&source)?,
         summary: bilbo_derive::summary::keys::section(&source)?,
+        setup: Setup {
+            plugin: SETUP_PLUGIN.resolve(&source)?,
+            notes: SETUP_NOTES.resolve(&source)?,
+            claude_enabled: SETUP_CLAUDE_ENABLED.resolve(&source)?,
+            claude_program: SETUP_CLAUDE_PROGRAM.resolve(&source)?,
+            codex_enabled: SETUP_CODEX_ENABLED.resolve(&source)?,
+            codex_program: SETUP_CODEX_PROGRAM.resolve(&source)?,
+            agy_enabled: SETUP_AGY_ENABLED.resolve(&source)?,
+            agy_program: SETUP_AGY_PROGRAM.resolve(&source)?,
+            timer_logs: SETUP_TIMER_LOGS.resolve(&source)?,
+        },
+        setup_timer: bilbo_setup::keys::section(&source)?,
         kind: kind
             .iter()
             .map(|key| Ok((*key, key.resolve(&source)?)))
@@ -948,6 +1148,20 @@ mod tests {
                 "derive.summary.most",
                 "derive.summary.window",
                 "derive.summary.least",
+                "setup.plugin",
+                "setup.notes",
+                "setup.claude.enabled",
+                "setup.claude.program",
+                "setup.codex.enabled",
+                "setup.codex.program",
+                "setup.agy.enabled",
+                "setup.agy.program",
+                "setup.timer.logs",
+                "setup.timer.path",
+                "setup.refresh.every",
+                "setup.derive.every",
+                "setup.wait",
+                "setup.poll",
                 "markdown.heading_width",
                 "session.unpack_floor",
                 "session.unpack_ratio",
@@ -1016,7 +1230,7 @@ mod tests {
             .err(),
             Some(
                 "/c.toml:3: unknown key store.sealat; the keys are paths.root, paths.state, \
-                 paths.cache, paths.temp, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.poll, follow, remember.editor, read.budget, read.outline_width, read.matches_listed, tag.cap, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, search.label_batch, search.list_limit, recall.budget, recall.notes_budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, recall.typo_terms, recall.typo_letters, recall.typo_max_letters, recall.typo_two_edits, recall.pair_weight, digest.markdown.most, digest.markdown.floor, digest.session.most, digest.session.floor, digest.session.old_after, digest.session.subagents, digest.session.parts, digest.note.most, digest.note.floor, digest.note.width, digest.summary.enabled, digest.candidates, digest.query, digest.wait, digest.input, digest.agy.tail, digest.log.enabled, llm.provider, llm.response, llm.timeout, llm.poll, llm.anthropic.model, llm.anthropic.via, llm.anthropic.api.endpoint, llm.anthropic.api.version, llm.anthropic.api.key_env, llm.anthropic.api.key_command, llm.anthropic.api.headers, llm.anthropic.api.extra, llm.anthropic.tool.program, llm.anthropic.tool.effort, llm.anthropic.tool.arguments, llm.anthropic.tool.inherit, llm.anthropic.tool.environment, llm.anthropic.tool.project_files, llm.openai.model, llm.openai.via, llm.openai.api.endpoint, llm.openai.api.key_env, llm.openai.api.key_command, llm.openai.api.headers, llm.openai.api.extra, llm.openai.tool.program, llm.openai.tool.effort, llm.openai.tool.arguments, llm.openai.tool.inherit, llm.openai.tool.environment, llm.openai.tool.home, llm.openai.tool.system_files, derive.enabled, derive.in, derive.not_in, derive.instructions, derive.quiet, derive.window, derive.passage, derive.passage_head, derive.earlier, derive.names, derive.answer_tokens, derive.calls, derive.retries, derive.retry_wait, derive.retry_factor, derive.retry_limit, derive.tries, derive.failures, derive.tags.enabled, derive.tags.pick, derive.tags.instruction, derive.tags.model, derive.tags.most, derive.tags.notes, derive.summary.enabled, derive.summary.instruction, derive.summary.most, derive.summary.window, derive.summary.least, markdown.heading_width, session.unpack_floor, session.unpack_ratio, session.unpack_window, session.wide_fields"
+                 paths.cache, paths.temp, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.poll, follow, remember.editor, read.budget, read.outline_width, read.matches_listed, tag.cap, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, search.label_batch, search.list_limit, recall.budget, recall.notes_budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, recall.typo_terms, recall.typo_letters, recall.typo_max_letters, recall.typo_two_edits, recall.pair_weight, digest.markdown.most, digest.markdown.floor, digest.session.most, digest.session.floor, digest.session.old_after, digest.session.subagents, digest.session.parts, digest.note.most, digest.note.floor, digest.note.width, digest.summary.enabled, digest.candidates, digest.query, digest.wait, digest.input, digest.agy.tail, digest.log.enabled, llm.provider, llm.response, llm.timeout, llm.poll, llm.anthropic.model, llm.anthropic.via, llm.anthropic.api.endpoint, llm.anthropic.api.version, llm.anthropic.api.key_env, llm.anthropic.api.key_command, llm.anthropic.api.headers, llm.anthropic.api.extra, llm.anthropic.tool.program, llm.anthropic.tool.effort, llm.anthropic.tool.arguments, llm.anthropic.tool.inherit, llm.anthropic.tool.environment, llm.anthropic.tool.project_files, llm.openai.model, llm.openai.via, llm.openai.api.endpoint, llm.openai.api.key_env, llm.openai.api.key_command, llm.openai.api.headers, llm.openai.api.extra, llm.openai.tool.program, llm.openai.tool.effort, llm.openai.tool.arguments, llm.openai.tool.inherit, llm.openai.tool.environment, llm.openai.tool.home, llm.openai.tool.system_files, derive.enabled, derive.in, derive.not_in, derive.instructions, derive.quiet, derive.window, derive.passage, derive.passage_head, derive.earlier, derive.names, derive.answer_tokens, derive.calls, derive.retries, derive.retry_wait, derive.retry_factor, derive.retry_limit, derive.tries, derive.failures, derive.tags.enabled, derive.tags.pick, derive.tags.instruction, derive.tags.model, derive.tags.most, derive.tags.notes, derive.summary.enabled, derive.summary.instruction, derive.summary.most, derive.summary.window, derive.summary.least, setup.plugin, setup.notes, setup.claude.enabled, setup.claude.program, setup.codex.enabled, setup.codex.program, setup.agy.enabled, setup.agy.program, setup.timer.logs, setup.timer.path, setup.refresh.every, setup.derive.every, setup.wait, setup.poll, markdown.heading_width, session.unpack_floor, session.unpack_ratio, session.unpack_window, session.wide_fields"
                     .to_owned()
             )
         );
@@ -1498,6 +1712,20 @@ mod tests {
                 "BILBO_SESSION_UNPACK_RATIO",
                 "BILBO_SESSION_UNPACK_WINDOW",
                 "BILBO_SESSION_WIDE_FIELDS",
+                "BILBO_SETUP_AGY_ENABLED",
+                "BILBO_SETUP_AGY_PROGRAM",
+                "BILBO_SETUP_CLAUDE_ENABLED",
+                "BILBO_SETUP_CLAUDE_PROGRAM",
+                "BILBO_SETUP_CODEX_ENABLED",
+                "BILBO_SETUP_CODEX_PROGRAM",
+                "BILBO_SETUP_DERIVE_EVERY",
+                "BILBO_SETUP_NOTES",
+                "BILBO_SETUP_PLUGIN",
+                "BILBO_SETUP_POLL",
+                "BILBO_SETUP_REFRESH_EVERY",
+                "BILBO_SETUP_TIMER_LOGS",
+                "BILBO_SETUP_TIMER_PATH",
+                "BILBO_SETUP_WAIT",
                 "BILBO_STORE_COMPRESSION",
                 "BILBO_STORE_POLL",
                 "BILBO_STORE_SEAL_AFTER",
@@ -2267,5 +2495,93 @@ mod tests {
         .expect_err("a refused item");
         assert!(said.starts_with("derive.in must be "), "{said}");
         assert!(!said.contains("/allowed.toml"), "{said}");
+    }
+
+    #[test]
+    fn each_setup_key_of_the_root_takes_its_default_and_refuses_what_is_outside() {
+        let defaults = editor_with(&[], None).expect("defaults").setup;
+        assert_eq!(defaults.plugin.value, None);
+        assert_eq!(defaults.timer_logs.value, None);
+        for (switch, expected) in [
+            (&defaults.claude_enabled, true),
+            (&defaults.codex_enabled, true),
+            (&defaults.agy_enabled, true),
+        ] {
+            assert_eq!(switch.value, expected);
+        }
+        assert_eq!(defaults.claude_program.value, PathBuf::from("claude"));
+        assert_eq!(defaults.codex_program.value, PathBuf::from("codex"));
+        assert_eq!(defaults.agy_program.value, PathBuf::from("agy"));
+        for key in [
+            "setup.claude.enabled",
+            "setup.codex.enabled",
+            "setup.agy.enabled",
+        ] {
+            for value in ["\"yes\"", "1", "0", "\"\""] {
+                let said = editor_with(&[], Some(&format!("{key} = {value}\n"))).expect_err(value);
+                assert!(
+                    said.contains(&format!("{key} must be true or false")),
+                    "{said}"
+                );
+            }
+        }
+        for key in [
+            "setup.claude.program",
+            "setup.codex.program",
+            "setup.agy.program",
+        ] {
+            for value in ["\"tool\"", "\"/usr/bin/tool\"", "\"~/bin/tool\""] {
+                editor_with(&[], Some(&format!("{key} = {value}\n")))
+                    .unwrap_or_else(|error| panic!("{key}={value}: {error}"));
+            }
+            for value in ["\"\"", "\"bin/tool\"", "\"./tool\"", "\"/a/../tool\""] {
+                let said = editor_with(&[], Some(&format!("{key} = {value}\n"))).expect_err(value);
+                assert!(said.contains(key), "{said}");
+            }
+        }
+        for key in ["setup.plugin", "setup.notes", "setup.timer.logs"] {
+            for value in ["\"\"", "\"/p\"", "\"~/p\""] {
+                editor_with(&[], Some(&format!("{key} = {value}\n")))
+                    .unwrap_or_else(|error| panic!("{key}={value}: {error}"));
+            }
+            for value in ["\"p\"", "\"./p\"", "3"] {
+                assert!(
+                    editor_with(&[], Some(&format!("{key} = {value}\n"))).is_err(),
+                    "{key}={value}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_tool_is_kept_out_from_the_file_and_from_its_variable() {
+        for (env, file) in [
+            (&[][..], "setup.codex.enabled = false\n"),
+            (&[("BILBO_SETUP_CODEX_ENABLED", "false")][..], ""),
+        ] {
+            let setup = editor_with(env, Some(file)).expect("false").setup;
+            assert!(!setup.codex_enabled.value);
+            assert!(setup.claude_enabled.value && setup.agy_enabled.value);
+        }
+        let setup = editor_with(&[("BILBO_SETUP_CODEX_ENABLED", "")], None)
+            .expect("an empty variable is unset")
+            .setup;
+        assert!(setup.codex_enabled.value);
+    }
+
+    #[test]
+    fn the_folder_variables_are_home_and_what_the_four_folder_keys_read() {
+        assert_eq!(
+            super::folder_variables(),
+            [
+                "HOME",
+                "BILBO_CONFIG",
+                "XDG_CONFIG_HOME",
+                "BILBO_HOME",
+                "XDG_DATA_HOME",
+                "XDG_STATE_HOME",
+                "XDG_CACHE_HOME",
+            ]
+        );
     }
 }

@@ -14,6 +14,7 @@ mod reindex;
 mod remember;
 mod scratch;
 mod sessions;
+mod setup;
 mod tag;
 mod tty;
 
@@ -52,8 +53,7 @@ pub(crate) fn bilbo<S: AsRef<OsStr>>(args: &[S], env: &[(&str, &str)]) -> Run {
 }
 
 const OVERVIEW_START: &str = "bilbo keeps durable memory for coding agents: ";
-const VERBS: &str =
-    "; the verbs are remember, refresh, recall, digest, read, tag, forget, reindex, derive, config";
+const VERBS: &str = "; the verbs are remember, refresh, recall, digest, read, tag, forget, reindex, derive, config, setup";
 const SEE: &str = "bilbo: see 'bilbo --help'\n";
 
 #[test]

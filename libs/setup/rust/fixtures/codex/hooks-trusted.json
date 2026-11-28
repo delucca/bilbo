@@ -1,0 +1,49 @@
+{
+  "data": [
+    {
+      "cwd": "/world/home",
+      "hooks": [
+        {
+          "key": "bilbo@bilbo:hooks/hooks.json:user_prompt_submit:0:0",
+          "eventName": "userPromptSubmit",
+          "handlerType": "command",
+          "command": "command -v bilbo >/dev/null 2>&1 || exit 0; bilbo digest; exit 0",
+          "async": false,
+          "matcher": null,
+          "timeoutSec": 10,
+          "statusMessage": null,
+          "additionalContextLimit": null,
+          "sourcePath": "/world/home/.codex/plugins/cache/bilbo/bilbo/1.2.3/hooks/hooks.json",
+          "source": "plugin",
+          "pluginId": "bilbo@bilbo",
+          "environmentId": null,
+          "displayOrder": 0,
+          "enabled": true,
+          "isManaged": false,
+          "currentHash": "sha256:p1",
+          "trustStatus": "trusted"
+        },
+        {
+          "key": "bilbo@bilbo:hooks/hooks.json:session_start:0:0",
+          "eventName": "sessionStart",
+          "handlerType": "command",
+          "command": "command -v bilbo >/dev/null 2>&1 || exit 0; echo 'Context was compacted. If this session settled something later sessions should know, such as a decision, a gotcha or a plan, save it with the bilbo note skill once the current task allows.'",
+          "async": false,
+          "matcher": "compact",
+          "timeoutSec": 10,
+          "statusMessage": null,
+          "additionalContextLimit": null,
+          "sourcePath": "/world/home/.codex/plugins/cache/bilbo/bilbo/1.2.3/hooks/hooks.json",
+          "source": "plugin",
+          "pluginId": "bilbo@bilbo",
+          "environmentId": null,
+          "displayOrder": 0,
+          "enabled": true,
+          "isManaged": false,
+          "currentHash": "sha256:s1",
+          "trustStatus": "managed"
+        }
+      ]
+    }
+  ]
+}

@@ -76,9 +76,11 @@ dependencies = [
  "bilbo-derive",
  "bilbo-entries",
  "bilbo-llm",
+ "bilbo-programs",
  "bilbo-provider",
  "bilbo-search",
  "bilbo-settings",
+ "bilbo-setup",
  "bilbo-store",
  "clap",
  "proc-macro2",
@@ -145,6 +147,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "bilbo-programs"
+version = "0.0.0"
+
+[[package]]
 name = "bilbo-provider"
 version = "0.0.0"
 
@@ -173,6 +179,17 @@ version = "0.0.0"
 dependencies = [
  "rustix",
  "toml",
+]
+
+[[package]]
+name = "bilbo-setup"
+version = "0.0.0"
+dependencies = [
+ "bilbo-layout",
+ "bilbo-programs",
+ "bilbo-settings",
+ "rustix",
+ "serde_json",
 ]
 
 [[package]]

@@ -1,0 +1,19 @@
+[package]
+name = "bilbo-setup"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Setting a machine up: the plugin in the tools, and the timers."
+
+[dependencies]
+bilbo-settings.workspace = true
+rustix = { workspace = true, features = ["process"] }
+serde_json.workspace = true
+
+[dev-dependencies]
+bilbo-layout.workspace = true
+bilbo-programs.workspace = true
+
+[lints]
+workspace = true

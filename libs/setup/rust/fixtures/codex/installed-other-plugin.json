@@ -1,0 +1,41 @@
+{
+  "installed": [
+    {
+      "pluginId": "bilbo@bilbo",
+      "name": "bilbo",
+      "marketplaceName": "bilbo",
+      "version": "1.2.3",
+      "installed": true,
+      "enabled": true,
+      "source": {
+        "source": "local",
+        "path": "/world/pkg/plugins/bilbo"
+      },
+      "marketplaceSource": {
+        "sourceType": "local",
+        "source": "/world/pkg"
+      },
+      "installPolicy": "AVAILABLE",
+      "authPolicy": "ON_INSTALL"
+    },
+    {
+      "pluginId": "other@bilbo",
+      "name": "other",
+      "marketplaceName": "bilbo",
+      "version": "1.2.3",
+      "installed": true,
+      "enabled": true,
+      "source": {
+        "source": "local",
+        "path": "/world/pkg/plugins/bilbo"
+      },
+      "marketplaceSource": {
+        "sourceType": "local",
+        "source": "/world/pkg"
+      },
+      "installPolicy": "AVAILABLE",
+      "authPolicy": "ON_INSTALL"
+    }
+  ],
+  "available": []
+}

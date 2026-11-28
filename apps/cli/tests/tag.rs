@@ -321,6 +321,7 @@ fn run_noticed(vars: HashMap<String, OsString>, args: &[String], notices: Sender
         var: Rc::new(move |name| vars.get(name).cloned()),
         stdin: Box::new(io::empty()),
         who: Who::Nobody,
+        program: None,
         notice: Box::new(move |message| {
             notices.send(message.plain_lines().join("\n")).ok();
         }),
@@ -465,6 +466,7 @@ fn outcome_of(
         var: Rc::new(move |name| vars.get(name).cloned()),
         stdin: Box::new(io::empty()),
         who: Who::Nobody,
+        program: None,
         notice,
     };
     let settings = settings::load(

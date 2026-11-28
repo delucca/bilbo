@@ -2,7 +2,7 @@ use std::io::Read;
 
 use serde::de::{Deserialize, DeserializeOwned, Deserializer, IgnoredAny, Visitor};
 
-use super::transcript::Unread;
+use super::transcript::{Tail, Unread};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Given {
@@ -81,7 +81,7 @@ impl<'de> Deserialize<'de> for Raw {
 enum Field {
     Absent,
     Other,
-    Whole(u64),
+    Zero,
     Text(String),
 }
 
@@ -128,7 +128,7 @@ pub fn read(input: &mut dyn Read, limit: u64) -> Result<Given, Refused> {
 pub fn read_agy(
     input: &mut dyn Read,
     limit: u64,
-    tail: &dyn Fn(&str) -> Result<Vec<u8>, Unread>,
+    tail: &dyn Fn(&str) -> Result<Tail, Unread>,
 ) -> Result<Heard, Refused> {
     let bytes = taken(input, limit)?;
     whole_object(&bytes)?;
@@ -141,7 +141,7 @@ pub fn read_agy(
         ],
     )
     .ok_or(Refused::NotAnObject)?;
-    if !matches!(number, Field::Absent | Field::Whole(0)) {
+    if !matches!(number, Field::Absent | Field::Zero) {
         return Ok(Heard::Quiet);
     }
     let session = conversation.text().ok_or(Refused::NoConversation)?;
@@ -152,14 +152,19 @@ pub fn read_agy(
         Unread::NotRegular => Refused::NotRegular(session.clone(), path.clone()),
         Unread::Failed(error) => Refused::Unreadable(session.clone(), path.clone(), error),
     })?;
-    match last_user_input(&steps) {
+    match last_user_input(&steps.bytes, steps.from_start) {
         Some(prompt) => Ok(Heard::Turn(Given { session, prompt })),
         None => Err(Refused::NoUserInput(session)),
     }
 }
 
-fn last_user_input(steps: &[u8]) -> Option<String> {
-    for line in steps.rsplit(|byte| *byte == b'\n') {
+fn last_user_input(steps: &[u8], from_start: bool) -> Option<String> {
+    let walked = if from_start {
+        steps
+    } else {
+        &steps[steps.iter().position(|byte| *byte == b'\n')? + 1..]
+    };
+    for line in walked.rsplit(|byte| *byte == b'\n') {
         if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
@@ -239,15 +244,11 @@ fn scan<const N: usize>(bytes: &[u8], names: [&[u8]; N]) -> Option<[Field; N]> {
                     at = next;
                     Field::Text(String::from_utf8_lossy(&text).into_owned())
                 }
-                (Some(_), Some(b'0'..=b'9')) => {
-                    let (number, next): (serde_json::Number, usize) = value_at(bytes, at)?;
-                    at = next;
-                    number.as_u64().map_or(Field::Other, Field::Whole)
-                }
                 _ => {
                     let (_, next): (IgnoredAny, usize) = value_at(bytes, at)?;
+                    let zero = wanted.is_some() && bytes.get(at..next) == Some(b"0".as_slice());
                     at = next;
-                    Field::Other
+                    if zero { Field::Zero } else { Field::Other }
                 }
             };
             if let Some(place) = wanted {
@@ -271,7 +272,7 @@ fn scan<const N: usize>(bytes: &[u8], names: [&[u8]; N]) -> Option<[Field; N]> {
 mod tests {
     use std::io::{self, Read};
 
-    use super::{Given, Heard, Refused, Unread, read, read_agy};
+    use super::{Given, Heard, Refused, Tail, Unread, read, read_agy};
 
     const LIMIT: u64 = 4096;
 
@@ -494,7 +495,12 @@ mod tests {
     }
 
     fn heard(input: &[u8], steps: &[u8]) -> Result<Heard, Refused> {
-        read_agy(&mut &input[..], LIMIT, &|_| Ok(steps.to_vec()))
+        read_agy(&mut &input[..], LIMIT, &|_| {
+            Ok(Tail {
+                bytes: steps.to_vec(),
+                from_start: true,
+            })
+        })
     }
 
     fn turn(session: &str, prompt: &str) -> Result<Heard, Refused> {
@@ -558,6 +564,10 @@ mod tests {
             "null",
             "1e2",
             "99999999999999999999",
+            "1e999",
+            "0.0",
+            "-0",
+            "0e0",
         ] {
             assert_eq!(
                 heard(with(quiet).as_bytes(), steps),
@@ -566,6 +576,7 @@ mod tests {
             );
         }
         assert_eq!(heard(with("0").as_bytes(), steps), turn("c", "p"));
+        assert_eq!(heard(with(" 0 ").as_bytes(), steps), turn("c", "p"));
         let absent = br#"{"conversationId":"c","transcriptPath":"/t"}"#;
         assert_eq!(heard(absent, steps), turn("c", "p"));
         let nothing = br#"{"invocationNum":3}"#;
@@ -643,12 +654,18 @@ mod tests {
             assert_eq!(got.session(), Some("c-1"));
         }
         assert_eq!(
-            read_agy(&mut Fails(false), LIMIT, &|_| Ok(Vec::new())),
+            read_agy(&mut Fails(false), LIMIT, &|_| Ok(Tail {
+                bytes: Vec::new(),
+                from_start: true
+            })),
             Err(Refused::Unread("the pipe broke".to_owned()))
         );
         let over = [AGY, b" "].concat();
         assert_eq!(
-            read_agy(&mut &over[..], AGY.len() as u64, &|_| Ok(Vec::new())),
+            read_agy(&mut &over[..], AGY.len() as u64, &|_| Ok(Tail {
+                bytes: Vec::new(),
+                from_start: true
+            })),
             Err(Refused::TooLong(AGY.len() as u64))
         );
     }
@@ -678,9 +695,85 @@ mod tests {
                 format!(r#"{{"invocationNum":2,"conversationId":{many},"transcriptPath":7}}"#),
                 Ok(Heard::Quiet),
             ),
+            (
+                r#"{"conversationId":1e999,"conversationId":"a","transcriptPath":"/t"}"#.to_owned(),
+                turn("a", "p"),
+            ),
+            (
+                r#"{"conversationId":"c","transcriptPath":1e999,"transcriptPath":"/t"}"#.to_owned(),
+                turn("c", "p"),
+            ),
+            (
+                r#"{"conversationId":"c","transcriptPath":"/t","invocationNum":1e999,"invocationNum":0}"#.to_owned(),
+                turn("c", "p"),
+            ),
+            (
+                r#"{"conversationId":"c","transcriptPath":"/t","invocationNum":0,"invocationNum":1e999}"#.to_owned(),
+                Ok(Heard::Quiet),
+            ),
+            (
+                r#"{"conversationId":"c","transcriptPath":1e999}"#.to_owned(),
+                Err(Refused::NoTranscript("c".to_owned())),
+            ),
         ];
         for (input, wanted) in rows {
             assert_eq!(heard(input.as_bytes(), steps), wanted, "{input}");
+        }
+        let doubled = b"{\"type\":1e999,\"type\":\"USER_INPUT\",\"content\":\"p\"}\n";
+        assert_eq!(heard(AGY, doubled), turn("c-1", "p"));
+        let number = b"{\"type\":\"USER_INPUT\",\"content\":1e999}\n";
+        assert_eq!(
+            heard(AGY, number),
+            Err(Refused::NoUserInput("c-1".to_owned()))
+        );
+    }
+
+    fn heard_from(steps: &[u8], from_start: bool) -> Result<Heard, Refused> {
+        read_agy(&mut &AGY[..], LIMIT, &|_| {
+            Ok(Tail {
+                bytes: steps.to_vec(),
+                from_start,
+            })
+        })
+    }
+
+    #[test]
+    fn a_tail_that_begins_past_the_files_start_has_no_step_before_its_first_line_feed() {
+        const S: &str = "{\"type\":\"USER_INPUT\",\"content\":\"p\"}";
+        const SYSTEM: &str = "{\"type\":\"SYSTEM_MESSAGE\",\"content\":\"s\"}";
+        let none = Err(Refused::NoUserInput("c-1".to_owned()));
+        for steps in [
+            format!("        {S}\n"),
+            format!("{S}\n"),
+            format!("{S}\n{SYSTEM}\n"),
+            S.to_owned(),
+        ] {
+            assert_eq!(heard_from(steps.as_bytes(), false), none, "{steps:?}");
+        }
+        for steps in [format!("x\n{S}\n"), format!("\n{S}\n")] {
+            assert_eq!(
+                heard_from(steps.as_bytes(), false),
+                turn("c-1", "p"),
+                "{steps:?}"
+            );
+        }
+        for steps in [format!("{S}\n"), format!("        {S}\n")] {
+            assert_eq!(
+                heard_from(steps.as_bytes(), true),
+                turn("c-1", "p"),
+                "{steps:?}"
+            );
+        }
+        let tail = format!(
+            "{}{{\"type\":\"USER_INPUT\",\"content\":\"p\"}}",
+            "\n".repeat(1_000_000)
+        );
+        for from_start in [true, false] {
+            assert_eq!(
+                heard_from(tail.as_bytes(), from_start),
+                turn("c-1", "p"),
+                "{from_start}"
+            );
         }
     }
 }

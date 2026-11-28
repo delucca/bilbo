@@ -33,6 +33,7 @@ fn main() -> ExitCode {
         } else {
             Who::Nobody
         },
+        program: std::env::current_exe().ok(),
         notice: Box::new(move |message| {
             for line in message.lines(&err) {
                 let _ = writeln!(io::stderr().lock(), "{line}");
